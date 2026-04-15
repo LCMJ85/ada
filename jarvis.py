@@ -1,0 +1,1404 @@
+# ==============================================================================
+#  J.A.R.V.I.S. - Just A Rather Very Intelligent System
+#  Inspired by Tony Stark's AI Assistant
+#  Built with Gemini Live API, ElevenLabs TTS, PySide6 GUI
+# ==============================================================================
+
+# --- Core Imports ---
+import asyncio
+import base64
+import io
+import os
+import sys
+import traceback
+import json
+import websockets
+import argparse
+import threading
+from html import escape
+import subprocess
+import webbrowser
+import math
+import platform
+import psutil
+import datetime
+import shutil
+
+# --- PySide6 GUI Imports ---
+from PySide6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QLabel,
+                               QVBoxLayout, QWidget, QLineEdit, QHBoxLayout,
+                               QSizePolicy, QPushButton, QFrame, QGraphicsDropShadowEffect)
+from PySide6.QtCore import QObject, Signal, Slot, Qt, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import (QImage, QPixmap, QFont, QFontDatabase, QTextCursor,
+                           QPainter, QPen, QVector3D, QMatrix4x4, QColor, QBrush,
+                           QRadialGradient, QLinearGradient, QConicalGradient, QPainterPath)
+
+# --- Media and AI Imports ---
+import cv2
+import pyaudio
+import PIL.Image
+from google import genai
+from dotenv import load_dotenv
+from PIL import ImageGrab
+import numpy as np
+
+# --- Load Environment Variables ---
+load_dotenv()
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    sys.exit("Error: GEMINI_API_KEY not found. Please set it in your .env file.")
+if not ELEVENLABS_API_KEY:
+    sys.exit("Error: ELEVENLABS_API_KEY not found. Please check your .env file.")
+
+# --- Configuration ---
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+SEND_SAMPLE_RATE = 16000
+RECEIVE_SAMPLE_RATE = 24000
+CHUNK_SIZE = 1024
+MODEL = "gemini-live-2.5-flash-preview"
+VOICE_ID = 'pFZP5JQG7iQjIQuC4Bku'
+DEFAULT_MODE = "none"
+MAX_OUTPUT_TOKENS = 100
+
+# --- JARVIS Color Palette ---
+JARVIS_GOLD = "#FFD700"
+JARVIS_GOLD_DIM = "#B8960F"
+JARVIS_GOLD_BRIGHT = "#FFE44D"
+JARVIS_RED = "#FF4444"
+JARVIS_RED_DIM = "#8B0000"
+JARVIS_BLUE = "#4FC3F7"
+JARVIS_BLUE_BRIGHT = "#81D4FA"
+JARVIS_BG_DARK = "#0A0A0F"
+JARVIS_BG_PANEL = "#0D1117"
+JARVIS_BG_ACCENT = "#161B22"
+JARVIS_TEXT = "#E8E8F0"
+JARVIS_TEXT_DIM = "#8B949E"
+JARVIS_BORDER = "#FFD70040"
+JARVIS_CYAN = "#00E5FF"
+
+# --- Initialize Clients ---
+pya = pyaudio.PyAudio()
+
+
+# ==============================================================================
+# ARC REACTOR ANIMATION WIDGET (Iron Man Style)
+# ==============================================================================
+class ArcReactorWidget(QWidget):
+    """
+    A custom widget that renders an animated Arc Reactor inspired by Iron Man.
+    Pulses when JARVIS is speaking.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.angle = 0
+        self.inner_angle = 0
+        self.is_speaking = False
+        self.pulse_phase = 0
+        self.energy_rings = []
+        self.particle_angle = 0
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_animation)
+        self.timer.start(25)
+
+    def start_speaking_animation(self):
+        self.is_speaking = True
+
+    def stop_speaking_animation(self):
+        self.is_speaking = False
+        self.pulse_phase = 0
+        self.update()
+
+    def update_animation(self):
+        self.angle += 1.2
+        self.inner_angle -= 0.8
+        self.particle_angle += 2.0
+        if self.is_speaking:
+            self.pulse_phase += 0.15
+            if self.pulse_phase > math.pi * 2:
+                self.pulse_phase -= math.pi * 2
+        if self.angle >= 360:
+            self.angle = 0
+        if self.inner_angle <= -360:
+            self.inner_angle = 0
+        if self.particle_angle >= 360:
+            self.particle_angle = 0
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), Qt.transparent)
+
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        max_radius = min(w, h) / 2 - 10
+
+        # Pulse factor when speaking
+        pulse = 1.0
+        if self.is_speaking:
+            pulse = 1.0 + 0.08 * math.sin(self.pulse_phase)
+
+        # --- Outer Glow ---
+        glow_gradient = QRadialGradient(cx, cy, max_radius * 1.2)
+        glow_alpha = 60 if self.is_speaking else 30
+        glow_gradient.setColorAt(0, QColor(79, 195, 247, glow_alpha))
+        glow_gradient.setColorAt(0.5, QColor(79, 195, 247, glow_alpha // 3))
+        glow_gradient.setColorAt(1, QColor(79, 195, 247, 0))
+        painter.setBrush(QBrush(glow_gradient))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(int(cx - max_radius * 1.2), int(cy - max_radius * 1.2),
+                           int(max_radius * 2.4), int(max_radius * 2.4))
+
+        # --- Outer Ring ---
+        outer_r = max_radius * 0.85 * pulse
+        pen = QPen(QColor(79, 195, 247, 180), 2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(int(cx - outer_r), int(cy - outer_r), int(outer_r * 2), int(outer_r * 2))
+
+        # --- Rotating Segments (Outer) ---
+        painter.save()
+        painter.translate(cx, cy)
+        painter.rotate(self.angle)
+        segment_r = max_radius * 0.78 * pulse
+        num_segments = 12
+        for i in range(num_segments):
+            seg_angle = (360 / num_segments) * i
+            painter.save()
+            painter.rotate(seg_angle)
+            alpha = 120 + int(80 * math.sin(math.radians(seg_angle + self.angle)))
+            pen = QPen(QColor(79, 195, 247, alpha), 2.5)
+            painter.setPen(pen)
+            arc_len = 18
+            painter.drawArc(int(-segment_r), int(-segment_r),
+                          int(segment_r * 2), int(segment_r * 2),
+                          -arc_len * 16, arc_len * 2 * 16)
+            painter.restore()
+        painter.restore()
+
+        # --- Middle Ring ---
+        mid_r = max_radius * 0.6 * pulse
+        pen = QPen(QColor(255, 215, 0, 100), 1.5)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(int(cx - mid_r), int(cy - mid_r), int(mid_r * 2), int(mid_r * 2))
+
+        # --- Counter-Rotating Inner Segments ---
+        painter.save()
+        painter.translate(cx, cy)
+        painter.rotate(self.inner_angle)
+        inner_seg_r = max_radius * 0.52 * pulse
+        num_inner = 8
+        for i in range(num_inner):
+            seg_angle = (360 / num_inner) * i
+            painter.save()
+            painter.rotate(seg_angle)
+            alpha = 100 + int(100 * math.sin(math.radians(seg_angle - self.inner_angle * 2)))
+            pen = QPen(QColor(255, 215, 0, alpha), 2)
+            painter.setPen(pen)
+            painter.drawArc(int(-inner_seg_r), int(-inner_seg_r),
+                          int(inner_seg_r * 2), int(inner_seg_r * 2),
+                          -12 * 16, 24 * 16)
+            painter.restore()
+        painter.restore()
+
+        # --- Inner Ring ---
+        inner_r = max_radius * 0.38 * pulse
+        pen = QPen(QColor(79, 195, 247, 150), 1.5)
+        painter.setPen(pen)
+        painter.drawEllipse(int(cx - inner_r), int(cy - inner_r), int(inner_r * 2), int(inner_r * 2))
+
+        # --- Triangular Core Elements ---
+        painter.save()
+        painter.translate(cx, cy)
+        core_r = max_radius * 0.28 * pulse
+        num_triangles = 3
+        for i in range(num_triangles):
+            angle_offset = (360 / num_triangles) * i + self.angle * 0.5
+            rad = math.radians(angle_offset)
+            tx = core_r * math.cos(rad)
+            ty = core_r * math.sin(rad)
+            tri_size = max_radius * 0.06
+            path = QPainterPath()
+            path.moveTo(tx, ty - tri_size)
+            path.lineTo(tx - tri_size * 0.866, ty + tri_size * 0.5)
+            path.lineTo(tx + tri_size * 0.866, ty + tri_size * 0.5)
+            path.closeSubpath()
+            painter.setPen(QPen(QColor(79, 195, 247, 200), 1))
+            painter.setBrush(QBrush(QColor(79, 195, 247, 60)))
+            painter.drawPath(path)
+        painter.restore()
+
+        # --- Central Core (Bright) ---
+        core_size = max_radius * 0.18 * pulse
+        core_gradient = QRadialGradient(cx, cy, core_size)
+        if self.is_speaking:
+            core_gradient.setColorAt(0, QColor(255, 255, 255, 255))
+            core_gradient.setColorAt(0.3, QColor(129, 212, 250, 220))
+            core_gradient.setColorAt(0.7, QColor(79, 195, 247, 150))
+            core_gradient.setColorAt(1, QColor(79, 195, 247, 0))
+        else:
+            core_gradient.setColorAt(0, QColor(200, 230, 255, 220))
+            core_gradient.setColorAt(0.3, QColor(79, 195, 247, 180))
+            core_gradient.setColorAt(0.7, QColor(79, 195, 247, 100))
+            core_gradient.setColorAt(1, QColor(79, 195, 247, 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(core_gradient))
+        painter.drawEllipse(int(cx - core_size), int(cy - core_size),
+                           int(core_size * 2), int(core_size * 2))
+
+        # --- Particle Effects (when speaking) ---
+        if self.is_speaking:
+            num_particles = 16
+            for i in range(num_particles):
+                p_angle = math.radians((360 / num_particles) * i + self.particle_angle)
+                dist = max_radius * (0.4 + 0.3 * math.sin(self.pulse_phase + i * 0.5))
+                px = cx + dist * math.cos(p_angle)
+                py = cy + dist * math.sin(p_angle)
+                p_size = 2 + math.sin(self.pulse_phase + i) * 1.5
+                p_alpha = int(100 + 100 * math.sin(self.pulse_phase + i * 0.7))
+                painter.setBrush(QBrush(QColor(79, 195, 247, p_alpha)))
+                painter.drawEllipse(int(px - p_size / 2), int(py - p_size / 2),
+                                   int(p_size), int(p_size))
+
+
+# ==============================================================================
+# AI BACKEND LOGIC - J.A.R.V.I.S. CORE
+# ==============================================================================
+class JARVIS_Core(QObject):
+    """
+    The brain of J.A.R.V.I.S. - Handles all backend operations including
+    Gemini Live API, ElevenLabs TTS, video streaming, and system tools.
+    """
+    text_received = Signal(str)
+    end_of_turn = Signal()
+    frame_received = Signal(QImage)
+    search_results_received = Signal(list)
+    code_being_executed = Signal(str, str)
+    file_list_received = Signal(str, list)
+    video_mode_changed = Signal(str)
+    speaking_started = Signal()
+    speaking_stopped = Signal()
+    system_info_received = Signal(str)
+
+    def __init__(self, video_mode=DEFAULT_MODE):
+        super().__init__()
+        self.video_mode = video_mode
+        self.is_running = True
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
+
+        # --- Tool Definitions ---
+        create_folder = {
+            "name": "create_folder",
+            "description": "Creates a new folder at the specified path relative to the script's root directory.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "folder_path": {"type": "STRING", "description": "The path for the new folder (e.g., 'new_project/assets')."}
+                },
+                "required": ["folder_path"]
+            }
+        }
+
+        create_file = {
+            "name": "create_file",
+            "description": "Creates a new file with specified content at a given path.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "file_path": {"type": "STRING", "description": "The path for the new file."},
+                    "content": {"type": "STRING", "description": "The content to write into the new file."}
+                },
+                "required": ["file_path", "content"]
+            }
+        }
+
+        edit_file = {
+            "name": "edit_file",
+            "description": "Appends content to an existing file at a specified path.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "file_path": {"type": "STRING", "description": "The path of the file to edit."},
+                    "content": {"type": "STRING", "description": "The content to append to the file."}
+                },
+                "required": ["file_path", "content"]
+            }
+        }
+
+        list_files = {
+            "name": "list_files",
+            "description": "Lists all files and directories within a specified folder.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "directory_path": {"type": "STRING", "description": "The path of the directory to inspect. Defaults to '.' if omitted."}
+                }
+            }
+        }
+
+        read_file = {
+            "name": "read_file",
+            "description": "Reads the entire content of a specified file.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "file_path": {"type": "STRING", "description": "The path of the file to read."}
+                },
+                "required": ["file_path"]
+            }
+        }
+
+        open_application = {
+            "name": "open_application",
+            "description": "Opens or launches a desktop application on the user's computer.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "application_name": {"type": "STRING", "description": "The name of the application to open."}
+                },
+                "required": ["application_name"]
+            }
+        }
+
+        open_website = {
+            "name": "open_website",
+            "description": "Opens a given URL in the default web browser.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "url": {"type": "STRING", "description": "The full URL of the website to open."}
+                },
+                "required": ["url"]
+            }
+        }
+
+        get_system_info = {
+            "name": "get_system_info",
+            "description": "Gets current system information including CPU usage, memory, disk space, battery status, and uptime.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {}
+            }
+        }
+
+        get_datetime = {
+            "name": "get_datetime",
+            "description": "Gets the current date, time, and day of the week.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {}
+            }
+        }
+
+        run_system_command = {
+            "name": "run_system_command",
+            "description": "Executes a safe system shell command and returns the output. Only for non-destructive informational commands.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "command": {"type": "STRING", "description": "The shell command to execute (e.g., 'ipconfig', 'whoami', 'systeminfo')."}
+                },
+                "required": ["command"]
+            }
+        }
+
+        tools = [
+            {'google_search': {}},
+            {'code_execution': {}},
+            {"function_declarations": [
+                create_folder, create_file, edit_file, list_files, read_file,
+                open_application, open_website, get_system_info, get_datetime,
+                run_system_command
+            ]}
+        ]
+
+        self.config = {
+            "response_modalities": ["TEXT"],
+            "system_instruction": """
+            You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), an advanced AI assistant 
+            inspired by Tony Stark's legendary AI from the Iron Man universe.
+            
+            PERSONALITY & BEHAVIOR:
+            - You are sophisticated, witty, and impeccably polite with a dry British humor
+            - Address the user as "Sir" or "Ma'am" occasionally, like the original JARVIS
+            - You are proactive, anticipating needs before they are expressed
+            - You maintain a calm, composed demeanor even in complex situations
+            - You occasionally reference your Iron Man heritage with subtle humor
+            - You are loyal, protective, and always prioritize the user's best interests
+            
+            CAPABILITIES:
+            You have access to powerful tools for searching, code execution, and system actions.
+            The user may provide a live video stream (webcam or screen).
+            Ignore video content unless the user explicitly asks you to analyze it.
+            
+            TOOL USAGE GUIDELINES:
+            1. For information or questions → use Google Search
+            2. For math, calculations, or running Python code → use code_execution
+            3. For file operations → use create_folder, create_file, edit_file, list_files, read_file
+            4. For launching desktop apps → use open_application
+            5. For opening websites → use open_website
+            6. For system diagnostics → use get_system_info
+            7. For date/time queries → use get_datetime
+            8. For system commands → use run_system_command (only safe, non-destructive commands)
+            
+            Always choose the most appropriate tool. Be thorough but concise in responses.
+            When greeting, introduce yourself as JARVIS.""",
+            "tools": tools,
+            "max_output_tokens": MAX_OUTPUT_TOKENS
+        }
+
+        self.session = None
+        self.audio_stream = None
+        self.out_queue_gemini = asyncio.Queue(maxsize=20)
+        self.response_queue_tts = asyncio.Queue()
+        self.audio_in_queue_player = asyncio.Queue()
+        self.text_input_queue = asyncio.Queue()
+        self.latest_frame = None
+        self.tasks = []
+        self.loop = asyncio.new_event_loop()
+
+    # --- Tool Implementations ---
+    def _create_folder(self, folder_path):
+        try:
+            if not folder_path or not isinstance(folder_path, str):
+                return {"status": "error", "message": "Invalid folder path provided."}
+            if os.path.exists(folder_path):
+                return {"status": "skipped", "message": f"The folder '{folder_path}' already exists."}
+            os.makedirs(folder_path)
+            return {"status": "success", "message": f"Successfully created the folder at '{folder_path}'."}
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+
+    def _create_file(self, file_path, content):
+        try:
+            if not file_path or not isinstance(file_path, str):
+                return {"status": "error", "message": "Invalid file path provided."}
+            if os.path.exists(file_path):
+                return {"status": "skipped", "message": f"The file '{file_path}' already exists."}
+            dir_name = os.path.dirname(file_path)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+            with open(file_path, 'w') as f:
+                f.write(content)
+            return {"status": "success", "message": f"Successfully created the file at '{file_path}'."}
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred while creating the file: {str(e)}"}
+
+    def _edit_file(self, file_path, content):
+        try:
+            if not file_path or not isinstance(file_path, str):
+                return {"status": "error", "message": "Invalid file path provided."}
+            if not os.path.exists(file_path):
+                return {"status": "error", "message": f"The file '{file_path}' does not exist."}
+            with open(file_path, 'a') as f:
+                f.write(f"\n{content}")
+            return {"status": "success", "message": f"Successfully appended content to '{file_path}'."}
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred while editing the file: {str(e)}"}
+
+    def _list_files(self, directory_path):
+        try:
+            path_to_list = directory_path if directory_path else '.'
+            if not isinstance(path_to_list, str):
+                return {"status": "error", "message": "Invalid directory path provided."}
+            if not os.path.isdir(path_to_list):
+                return {"status": "error", "message": f"'{path_to_list}' is not a valid directory."}
+            files = os.listdir(path_to_list)
+            return {"status": "success", "message": f"Found {len(files)} items in '{path_to_list}'.",
+                    "files": files, "directory_path": path_to_list}
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+
+    def _read_file(self, file_path):
+        try:
+            if not file_path or not isinstance(file_path, str):
+                return {"status": "error", "message": "Invalid file path provided."}
+            if not os.path.exists(file_path):
+                return {"status": "error", "message": f"The file '{file_path}' does not exist."}
+            if not os.path.isfile(file_path):
+                return {"status": "error", "message": f"'{file_path}' is not a file."}
+            with open(file_path, 'r') as f:
+                content = f.read()
+            return {"status": "success", "message": f"Successfully read '{file_path}'.", "content": content}
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred while reading the file: {str(e)}"}
+
+    def _open_application(self, application_name):
+        print(f">>> [JARVIS] Launching application: '{application_name}'")
+        try:
+            if not application_name or not isinstance(application_name, str):
+                return {"status": "error", "message": "Invalid application name provided."}
+            command, shell_mode = [], False
+            if sys.platform == "win32":
+                app_map = {
+                    "calculator": "calc:", "notepad": "notepad", "chrome": "chrome",
+                    "google chrome": "chrome", "firefox": "firefox", "explorer": "explorer",
+                    "file explorer": "explorer", "cmd": "cmd", "command prompt": "cmd",
+                    "powershell": "powershell", "task manager": "taskmgr",
+                    "settings": "ms-settings:", "paint": "mspaint",
+                    "word": "winword", "excel": "excel", "powerpoint": "powerpnt",
+                    "spotify": "spotify", "discord": "discord", "steam": "steam",
+                    "vscode": "code", "visual studio code": "code"
+                }
+                app_command = app_map.get(application_name.lower(), application_name)
+                command, shell_mode = f"start {app_command}", True
+            elif sys.platform == "darwin":
+                app_map = {
+                    "calculator": "Calculator", "chrome": "Google Chrome",
+                    "firefox": "Firefox", "finder": "Finder", "textedit": "TextEdit",
+                    "safari": "Safari", "terminal": "Terminal", "spotify": "Spotify"
+                }
+                app_name = app_map.get(application_name.lower(), application_name)
+                command = ["open", "-a", app_name]
+            else:
+                command = [application_name.lower()]
+            subprocess.Popen(command, shell=shell_mode)
+            return {"status": "success", "message": f"Successfully launched '{application_name}'."}
+        except FileNotFoundError:
+            return {"status": "error", "message": f"Application '{application_name}' not found."}
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+
+    def _open_website(self, url):
+        print(f">>> [JARVIS] Opening URL: '{url}'")
+        try:
+            if not url or not isinstance(url, str):
+                return {"status": "error", "message": "Invalid URL provided."}
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            webbrowser.open(url)
+            return {"status": "success", "message": f"Successfully opened '{url}'."}
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+
+    def _get_system_info(self):
+        """Gathers comprehensive system information."""
+        try:
+            info = {}
+            info["os"] = f"{platform.system()} {platform.release()} ({platform.architecture()[0]})"
+            info["hostname"] = platform.node()
+            info["cpu_usage"] = f"{psutil.cpu_percent(interval=0.5)}%"
+            info["cpu_cores"] = f"{psutil.cpu_count(logical=False)} physical, {psutil.cpu_count()} logical"
+            mem = psutil.virtual_memory()
+            info["memory_total"] = f"{mem.total / (1024**3):.1f} GB"
+            info["memory_used"] = f"{mem.used / (1024**3):.1f} GB ({mem.percent}%)"
+            info["memory_available"] = f"{mem.available / (1024**3):.1f} GB"
+            disk = psutil.disk_usage('/')
+            info["disk_total"] = f"{disk.total / (1024**3):.1f} GB"
+            info["disk_used"] = f"{disk.used / (1024**3):.1f} GB ({disk.percent}%)"
+            info["disk_free"] = f"{disk.free / (1024**3):.1f} GB"
+            try:
+                battery = psutil.sensors_battery()
+                if battery:
+                    info["battery"] = f"{battery.percent}% {'(Charging)' if battery.power_plugged else '(On Battery)'}"
+                else:
+                    info["battery"] = "No battery detected (Desktop)"
+            except:
+                info["battery"] = "N/A"
+            boot_time = datetime.datetime.fromtimestamp(psutil.boot_time())
+            uptime = datetime.datetime.now() - boot_time
+            hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+            minutes, _ = divmod(remainder, 60)
+            info["uptime"] = f"{hours}h {minutes}m"
+            return {"status": "success", "system_info": info}
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to retrieve system info: {str(e)}"}
+
+    def _get_datetime(self):
+        """Returns current date and time information."""
+        now = datetime.datetime.now()
+        return {
+            "status": "success",
+            "date": now.strftime("%Y-%m-%d"),
+            "time": now.strftime("%H:%M:%S"),
+            "day": now.strftime("%A"),
+            "formatted": now.strftime("%A, %B %d, %Y at %I:%M %p")
+        }
+
+    def _run_system_command(self, command):
+        """Executes a safe system command."""
+        print(f">>> [JARVIS] Executing command: '{command}'")
+        blocked = ['rm ', 'del ', 'format ', 'mkfs', 'dd ', ':(){', 'shutdown', 'reboot',
+                   'rm -rf', 'deltree', '> /dev/', 'fork', 'sudo rm']
+        for blocked_cmd in blocked:
+            if blocked_cmd.lower() in command.lower():
+                return {"status": "error", "message": f"Command blocked for safety: '{command}'"}
+        try:
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True, timeout=15
+            )
+            output = result.stdout.strip() if result.stdout else ""
+            error = result.stderr.strip() if result.stderr else ""
+            if result.returncode == 0:
+                return {"status": "success", "output": output or "(No output)", "command": command}
+            else:
+                return {"status": "error", "output": output, "error": error, "command": command}
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "message": f"Command timed out after 15 seconds: '{command}'"}
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to execute command: {str(e)}"}
+
+    # --- Video & Audio Methods ---
+    @Slot(str)
+    def set_video_mode(self, mode):
+        if mode in ["camera", "screen", "none"]:
+            self.video_mode = mode
+            print(f">>> [JARVIS] Video mode: {self.video_mode}")
+            if mode == "none":
+                self.latest_frame = None
+            self.video_mode_changed.emit(mode)
+
+    async def stream_video_to_gui(self):
+        video_capture = None
+        while self.is_running:
+            frame = None
+            try:
+                if self.video_mode == "camera":
+                    if video_capture is None:
+                        video_capture = await asyncio.to_thread(cv2.VideoCapture, 0)
+                    if video_capture.isOpened():
+                        ret, frame = await asyncio.to_thread(video_capture.read)
+                        if not ret:
+                            await asyncio.sleep(0.01)
+                            continue
+                elif self.video_mode == "screen":
+                    if video_capture is not None:
+                        await asyncio.to_thread(video_capture.release)
+                        video_capture = None
+                    screenshot = await asyncio.to_thread(ImageGrab.grab)
+                    frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+                else:
+                    if video_capture is not None:
+                        await asyncio.to_thread(video_capture.release)
+                        video_capture = None
+                    await asyncio.sleep(0.1)
+                    continue
+
+                if frame is not None:
+                    self.latest_frame = frame
+                    h, w, ch = frame.shape
+                    bytes_per_line = ch * w
+                    qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
+                    self.frame_received.emit(qt_image.copy())
+                else:
+                    self.frame_received.emit(QImage())
+                await asyncio.sleep(0.033)
+            except Exception as e:
+                print(f">>> [ERROR] Video streaming error: {e}")
+                if video_capture is not None:
+                    await asyncio.to_thread(video_capture.release)
+                    video_capture = None
+                await asyncio.sleep(1)
+        if video_capture is not None:
+            await asyncio.to_thread(video_capture.release)
+
+    async def send_frames_to_gemini(self):
+        while self.is_running:
+            await asyncio.sleep(1.0)
+            if self.video_mode != "none" and self.latest_frame is not None:
+                frame_rgb = cv2.cvtColor(self.latest_frame, cv2.COLOR_BGR2RGB)
+                pil_img = PIL.Image.fromarray(frame_rgb)
+                pil_img.thumbnail([1024, 1024])
+                image_io = io.BytesIO()
+                pil_img.save(image_io, format="jpeg")
+                gemini_data = {"mime_type": "image/jpeg", "data": base64.b64encode(image_io.getvalue()).decode()}
+                await self.out_queue_gemini.put(gemini_data)
+
+    async def receive_text(self):
+        while self.is_running:
+            try:
+                turn_urls, turn_code_content, turn_code_result, file_list_data = set(), "", "", None
+                turn = self.session.receive()
+                async for chunk in turn:
+                    if chunk.tool_call and chunk.tool_call.function_calls:
+                        function_responses = []
+                        for fc in chunk.tool_call.function_calls:
+                            args, result = fc.args, {}
+                            if fc.name == "create_folder":
+                                result = self._create_folder(folder_path=args.get("folder_path"))
+                            elif fc.name == "create_file":
+                                result = self._create_file(file_path=args.get("file_path"), content=args.get("content"))
+                            elif fc.name == "edit_file":
+                                result = self._edit_file(file_path=args.get("file_path"), content=args.get("content"))
+                            elif fc.name == "list_files":
+                                result = self._list_files(directory_path=args.get("directory_path"))
+                                if result.get("status") == "success":
+                                    file_list_data = (result.get("directory_path"), result.get("files"))
+                            elif fc.name == "read_file":
+                                result = self._read_file(file_path=args.get("file_path"))
+                            elif fc.name == "open_application":
+                                result = self._open_application(application_name=args.get("application_name"))
+                            elif fc.name == "open_website":
+                                result = self._open_website(url=args.get("url"))
+                            elif fc.name == "get_system_info":
+                                result = self._get_system_info()
+                            elif fc.name == "get_datetime":
+                                result = self._get_datetime()
+                            elif fc.name == "run_system_command":
+                                result = self._run_system_command(command=args.get("command"))
+                            function_responses.append({"id": fc.id, "name": fc.name, "response": result})
+                        await self.session.send_tool_response(function_responses=function_responses)
+                        continue
+
+                    if chunk.server_content:
+                        if hasattr(chunk.server_content, 'grounding_metadata') and chunk.server_content.grounding_metadata:
+                            for g_chunk in chunk.server_content.grounding_metadata.grounding_chunks:
+                                if g_chunk.web and g_chunk.web.uri:
+                                    turn_urls.add(g_chunk.web.uri)
+                        if chunk.server_content.model_turn:
+                            for part in chunk.server_content.model_turn.parts:
+                                if part.executable_code:
+                                    turn_code_content = part.executable_code.code
+                                if part.code_execution_result:
+                                    turn_code_result = part.code_execution_result.output
+
+                    if chunk.text:
+                        self.text_received.emit(chunk.text)
+                        await self.response_queue_tts.put(chunk.text)
+
+                if file_list_data:
+                    self.file_list_received.emit(file_list_data[0], file_list_data[1])
+                elif turn_code_content:
+                    self.code_being_executed.emit(turn_code_content, turn_code_result)
+                elif turn_urls:
+                    self.search_results_received.emit(list(turn_urls))
+                else:
+                    self.code_being_executed.emit("", "")
+                    self.search_results_received.emit([])
+                    self.file_list_received.emit("", [])
+
+                self.end_of_turn.emit()
+                await self.response_queue_tts.put(None)
+            except Exception:
+                if not self.is_running:
+                    break
+                traceback.print_exc()
+
+    async def listen_audio(self):
+        mic_info = pya.get_default_input_device_info()
+        self.audio_stream = pya.open(
+            format=FORMAT, channels=CHANNELS, rate=SEND_SAMPLE_RATE,
+            input=True, input_device_index=mic_info["index"], frames_per_buffer=CHUNK_SIZE
+        )
+        while self.is_running:
+            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+            if not self.is_running:
+                break
+            await self.out_queue_gemini.put({"data": data, "mime_type": "audio/pcm"})
+
+    async def send_realtime(self):
+        while self.is_running:
+            msg = await self.out_queue_gemini.get()
+            if not self.is_running:
+                break
+            await self.session.send(input=msg)
+            self.out_queue_gemini.task_done()
+
+    async def process_text_input_queue(self):
+        while self.is_running:
+            text = await self.text_input_queue.get()
+            if text is None:
+                self.text_input_queue.task_done()
+                break
+            if self.session:
+                for q in [self.response_queue_tts, self.audio_in_queue_player]:
+                    while not q.empty():
+                        q.get_nowait()
+                await self.session.send_client_content(
+                    turns=[{"role": "user", "parts": [{"text": text or "."}]}]
+                )
+            self.text_input_queue.task_done()
+
+    async def tts(self):
+        uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream-input?model_id=eleven_turbo_v2_5&output_format=pcm_24000"
+        while self.is_running:
+            text_chunk = await self.response_queue_tts.get()
+            if text_chunk is None or not self.is_running:
+                self.response_queue_tts.task_done()
+                continue
+
+            self.speaking_started.emit()
+            try:
+                async with websockets.connect(uri) as websocket:
+                    await websocket.send(json.dumps({
+                        "text": " ",
+                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
+                        "xi_api_key": ELEVENLABS_API_KEY,
+                    }))
+
+                    async def listen():
+                        while self.is_running:
+                            try:
+                                message = await websocket.recv()
+                                data = json.loads(message)
+                                if data.get("audio"):
+                                    await self.audio_in_queue_player.put(base64.b64decode(data["audio"]))
+                                elif data.get("isFinal"):
+                                    break
+                            except websockets.exceptions.ConnectionClosed:
+                                break
+
+                    listen_task = asyncio.create_task(listen())
+                    await websocket.send(json.dumps({"text": text_chunk + " "}))
+                    self.response_queue_tts.task_done()
+
+                    while self.is_running:
+                        text_chunk = await self.response_queue_tts.get()
+                        if text_chunk is None:
+                            await websocket.send(json.dumps({"text": ""}))
+                            self.response_queue_tts.task_done()
+                            break
+                        await websocket.send(json.dumps({"text": text_chunk + " "}))
+                        self.response_queue_tts.task_done()
+                    await listen_task
+            except Exception as e:
+                print(f">>> [ERROR] TTS Error: {e}")
+            finally:
+                self.speaking_stopped.emit()
+
+    async def play_audio(self):
+        stream = await asyncio.to_thread(
+            pya.open, format=pyaudio.paInt16, channels=CHANNELS, rate=RECEIVE_SAMPLE_RATE, output=True
+        )
+        while self.is_running:
+            bytestream = await self.audio_in_queue_player.get()
+            if bytestream and self.is_running:
+                await asyncio.to_thread(stream.write, bytestream)
+            self.audio_in_queue_player.task_done()
+
+    async def main_task_runner(self, session):
+        self.session = session
+        self.tasks.extend([
+            asyncio.create_task(self.stream_video_to_gui()),
+            asyncio.create_task(self.send_frames_to_gemini()),
+            asyncio.create_task(self.listen_audio()),
+            asyncio.create_task(self.send_realtime()),
+            asyncio.create_task(self.receive_text()),
+            asyncio.create_task(self.tts()),
+            asyncio.create_task(self.play_audio()),
+            asyncio.create_task(self.process_text_input_queue())
+        ])
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+
+    async def run(self):
+        try:
+            async with self.client.aio.live.connect(model=MODEL, config=self.config) as session:
+                await self.main_task_runner(session)
+        except asyncio.CancelledError:
+            print(f"\n>>> [JARVIS] Core systems gracefully shutting down.")
+        except Exception as e:
+            print(f"\n>>> [ERROR] JARVIS Core error: {type(e).__name__}: {e}")
+        finally:
+            if self.is_running:
+                self.stop()
+
+    def start_event_loop(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self.run())
+
+    @Slot(str)
+    def handle_user_text(self, text):
+        if self.is_running and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.text_input_queue.put(text), self.loop)
+
+    async def shutdown_async_tasks(self):
+        if self.text_input_queue:
+            await self.text_input_queue.put(None)
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.sleep(0.1)
+
+    def stop(self):
+        if self.is_running and self.loop.is_running():
+            self.is_running = False
+            future = asyncio.run_coroutine_threadsafe(self.shutdown_async_tasks(), self.loop)
+            try:
+                future.result(timeout=5)
+            except Exception as e:
+                print(f">>> [ERROR] Shutdown error: {e}")
+        if self.audio_stream and self.audio_stream.is_active():
+            self.audio_stream.stop_stream()
+            self.audio_stream.close()
+
+
+# ==============================================================================
+# J.A.R.V.I.S. GUI - IRON MAN INSPIRED INTERFACE
+# ==============================================================================
+class JARVISWindow(QMainWindow):
+    user_text_submitted = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("J.A.R.V.I.S. - Just A Rather Very Intelligent System")
+        self.setGeometry(100, 100, 1600, 900)
+        self.setMinimumSize(1280, 720)
+
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {JARVIS_BG_DARK};
+                font-family: 'Segoe UI', 'Helvetica Neue', 'Consolas', sans-serif;
+            }}
+            QWidget#left_panel, QWidget#middle_panel, QWidget#right_panel {{
+                background-color: {JARVIS_BG_PANEL};
+                border: 1px solid {JARVIS_BORDER};
+                border-radius: 4px;
+            }}
+            QLabel#panel_title {{
+                color: {JARVIS_GOLD};
+                font-weight: bold;
+                font-size: 10pt;
+                padding: 8px 12px;
+                background-color: {JARVIS_BG_ACCENT};
+                text-transform: uppercase;
+                letter-spacing: 2px;
+                border-bottom: 1px solid {JARVIS_BORDER};
+            }}
+            QLabel#jarvis_title {{
+                color: {JARVIS_GOLD};
+                font-weight: bold;
+                font-size: 14pt;
+                padding: 8px;
+                letter-spacing: 3px;
+            }}
+            QLabel#status_label {{
+                color: {JARVIS_BLUE};
+                font-size: 9pt;
+                padding: 4px 8px;
+                letter-spacing: 1px;
+            }}
+            QTextEdit#text_display {{
+                background-color: transparent;
+                color: {JARVIS_TEXT};
+                font-size: 11pt;
+                border: none;
+                padding: 12px;
+                selection-background-color: {JARVIS_GOLD_DIM};
+            }}
+            QLineEdit#input_box {{
+                background-color: {JARVIS_BG_DARK};
+                color: {JARVIS_GOLD_BRIGHT};
+                font-size: 11pt;
+                border: 1px solid {JARVIS_BORDER};
+                border-radius: 4px;
+                padding: 12px 16px;
+                font-family: 'Consolas', 'Monaco', monospace;
+            }}
+            QLineEdit#input_box:focus {{
+                border: 1px solid {JARVIS_GOLD};
+            }}
+            QLabel#video_label {{
+                background-color: #000000;
+                border: 1px solid {JARVIS_BORDER};
+                border-radius: 4px;
+            }}
+            QLabel#tool_activity_display {{
+                background-color: {JARVIS_BG_DARK};
+                color: {JARVIS_BLUE};
+                font-family: 'Consolas', 'Monaco', monospace;
+                font-size: 9pt;
+                border: none;
+                border-top: 1px solid {JARVIS_BORDER};
+                padding: 10px;
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: {JARVIS_BG_PANEL};
+                width: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {JARVIS_GOLD_DIM};
+                min-height: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
+            QPushButton {{
+                background-color: transparent;
+                color: {JARVIS_GOLD};
+                border: 1px solid {JARVIS_GOLD_DIM};
+                padding: 10px 16px;
+                border-radius: 4px;
+                font-size: 9pt;
+                font-weight: bold;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{
+                background-color: {JARVIS_GOLD};
+                color: {JARVIS_BG_DARK};
+                border: 1px solid {JARVIS_GOLD};
+            }}
+            QPushButton:pressed {{
+                background-color: {JARVIS_GOLD_BRIGHT};
+                color: {JARVIS_BG_DARK};
+            }}
+            QPushButton#video_button_active {{
+                background-color: {JARVIS_GOLD};
+                color: {JARVIS_BG_DARK};
+                border: 1px solid {JARVIS_GOLD_BRIGHT};
+            }}
+        """)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QHBoxLayout(self.central_widget)
+        self.main_layout.setContentsMargins(12, 12, 12, 12)
+        self.main_layout.setSpacing(12)
+
+        # ===== LEFT PANEL - System Activity =====
+        self.left_panel = QWidget()
+        self.left_panel.setObjectName("left_panel")
+        self.left_layout = QVBoxLayout(self.left_panel)
+        self.left_layout.setContentsMargins(0, 0, 0, 0)
+        self.left_layout.setSpacing(0)
+
+        self.tool_activity_title = QLabel("SYSTEM DIAGNOSTICS")
+        self.tool_activity_title.setObjectName("panel_title")
+        self.left_layout.addWidget(self.tool_activity_title)
+
+        self.tool_activity_display = QLabel()
+        self.tool_activity_display.setObjectName("tool_activity_display")
+        self.tool_activity_display.setWordWrap(True)
+        self.tool_activity_display.setAlignment(Qt.AlignTop)
+        self.tool_activity_display.setOpenExternalLinks(True)
+        self.tool_activity_display.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.left_layout.addWidget(self.tool_activity_display, 1)
+
+        # ===== MIDDLE PANEL - Main Interface =====
+        self.middle_panel = QWidget()
+        self.middle_panel.setObjectName("middle_panel")
+        self.middle_layout = QVBoxLayout(self.middle_panel)
+        self.middle_layout.setContentsMargins(0, 0, 0, 12)
+        self.middle_layout.setSpacing(0)
+
+        # --- Header ---
+        header_widget = QWidget()
+        header_layout = QVBoxLayout(header_widget)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        header_layout.setAlignment(Qt.AlignCenter)
+
+        self.jarvis_title = QLabel("J . A . R . V . I . S .")
+        self.jarvis_title.setObjectName("jarvis_title")
+        self.jarvis_title.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(self.jarvis_title)
+
+        self.status_label = QLabel("SYSTEMS ONLINE  //  READY")
+        self.status_label.setObjectName("status_label")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(self.status_label)
+
+        self.middle_layout.addWidget(header_widget)
+
+        # --- Arc Reactor Animation ---
+        self.animation_widget = ArcReactorWidget()
+        self.animation_widget.setMinimumHeight(160)
+        self.animation_widget.setMaximumHeight(220)
+        self.middle_layout.addWidget(self.animation_widget, 2)
+
+        # --- Separator ---
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet(f"background-color: {JARVIS_BORDER}; max-height: 1px;")
+        self.middle_layout.addWidget(separator)
+
+        # --- Chat Display ---
+        self.text_display = QTextEdit()
+        self.text_display.setObjectName("text_display")
+        self.text_display.setReadOnly(True)
+        self.middle_layout.addWidget(self.text_display, 5)
+
+        # --- Input Box ---
+        input_container = QWidget()
+        input_layout = QHBoxLayout(input_container)
+        input_layout.setContentsMargins(12, 8, 12, 0)
+        self.input_box = QLineEdit()
+        self.input_box.setObjectName("input_box")
+        self.input_box.setPlaceholderText("Enter command, Sir...")
+        self.input_box.returnPressed.connect(self.send_user_text)
+        input_layout.addWidget(self.input_box)
+        self.middle_layout.addWidget(input_container)
+
+        # ===== RIGHT PANEL - Visual Feed =====
+        self.right_panel = QWidget()
+        self.right_panel.setObjectName("right_panel")
+        self.right_layout = QVBoxLayout(self.right_panel)
+        self.right_layout.setContentsMargins(12, 12, 12, 12)
+        self.right_layout.setSpacing(12)
+
+        # --- Visual Feed Title ---
+        visual_title = QLabel("VISUAL FEED")
+        visual_title.setObjectName("panel_title")
+        visual_title.setAlignment(Qt.AlignCenter)
+        self.right_layout.addWidget(visual_title)
+
+        # --- Video Container ---
+        self.video_container = QWidget()
+        self.video_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        video_container_layout = QVBoxLayout(self.video_container)
+        video_container_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.video_label = QLabel()
+        self.video_label.setObjectName("video_label")
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        video_container_layout.addWidget(self.video_label)
+        self.right_layout.addWidget(self.video_container)
+
+        # --- Video Mode Buttons ---
+        self.button_container = QHBoxLayout()
+        self.button_container.setSpacing(8)
+        self.webcam_button = QPushButton("WEBCAM")
+        self.screenshare_button = QPushButton("SCREEN")
+        self.off_button = QPushButton("OFFLINE")
+        self.button_container.addWidget(self.webcam_button)
+        self.button_container.addWidget(self.screenshare_button)
+        self.button_container.addWidget(self.off_button)
+        self.right_layout.addLayout(self.button_container)
+
+        # --- System Info Label ---
+        self.sys_info_label = QLabel()
+        self.sys_info_label.setObjectName("tool_activity_display")
+        self.sys_info_label.setWordWrap(True)
+        self.sys_info_label.setMaximumHeight(80)
+        self.sys_info_label.setAlignment(Qt.AlignTop)
+        self.right_layout.addWidget(self.sys_info_label)
+
+        # --- Add Panels to Main Layout ---
+        self.main_layout.addWidget(self.left_panel, 2)
+        self.main_layout.addWidget(self.middle_panel, 5)
+        self.main_layout.addWidget(self.right_panel, 3)
+
+        self.is_first_jarvis_chunk = True
+        self.current_video_mode = DEFAULT_MODE
+
+        # --- System Info Timer ---
+        self.sys_info_timer = QTimer(self)
+        self.sys_info_timer.timeout.connect(self.update_system_info_display)
+        self.sys_info_timer.start(5000)
+        self.update_system_info_display()
+
+        self.setup_backend_thread()
+
+    def update_system_info_display(self):
+        """Updates the small system info display in the right panel."""
+        try:
+            cpu = psutil.cpu_percent(interval=0)
+            mem = psutil.virtual_memory()
+            now = datetime.datetime.now().strftime("%H:%M:%S")
+            html = (f'<span style="color: {JARVIS_GOLD}; font-size: 8pt;">'
+                    f'CPU: {cpu}% | RAM: {mem.percent}% | {now}</span>')
+            self.sys_info_label.setText(html)
+        except:
+            pass
+
+    def setup_backend_thread(self):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--mode", type=str, default=DEFAULT_MODE,
+                          help="Video source mode", choices=["camera", "screen", "none"])
+        args, unknown = parser.parse_known_args()
+
+        self.jarvis_core = JARVIS_Core(video_mode=args.mode)
+
+        self.user_text_submitted.connect(self.jarvis_core.handle_user_text)
+        self.webcam_button.clicked.connect(lambda: self.jarvis_core.set_video_mode("camera"))
+        self.screenshare_button.clicked.connect(lambda: self.jarvis_core.set_video_mode("screen"))
+        self.off_button.clicked.connect(lambda: self.jarvis_core.set_video_mode("none"))
+
+        self.jarvis_core.text_received.connect(self.update_text)
+        self.jarvis_core.search_results_received.connect(self.update_search_results)
+        self.jarvis_core.code_being_executed.connect(self.display_executed_code)
+        self.jarvis_core.file_list_received.connect(self.update_file_list)
+        self.jarvis_core.end_of_turn.connect(self.add_newline)
+        self.jarvis_core.frame_received.connect(self.update_frame)
+        self.jarvis_core.video_mode_changed.connect(self.update_video_mode_ui)
+        self.jarvis_core.speaking_started.connect(self.on_speaking_started)
+        self.jarvis_core.speaking_stopped.connect(self.on_speaking_stopped)
+
+        self.backend_thread = threading.Thread(target=self.jarvis_core.start_event_loop)
+        self.backend_thread.daemon = True
+        self.backend_thread.start()
+
+        self.update_video_mode_ui(self.jarvis_core.video_mode)
+
+    @Slot()
+    def on_speaking_started(self):
+        self.animation_widget.start_speaking_animation()
+        self.status_label.setText("SPEAKING  //  ACTIVE")
+        self.status_label.setStyleSheet(f"color: {JARVIS_GOLD}; font-size: 9pt; padding: 4px 8px; letter-spacing: 1px;")
+
+    @Slot()
+    def on_speaking_stopped(self):
+        self.animation_widget.stop_speaking_animation()
+        self.status_label.setText("SYSTEMS ONLINE  //  READY")
+        self.status_label.setStyleSheet(f"color: {JARVIS_BLUE}; font-size: 9pt; padding: 4px 8px; letter-spacing: 1px;")
+
+    def send_user_text(self):
+        text = self.input_box.text().strip()
+        if text:
+            self.text_display.append(
+                f"<p style='color:{JARVIS_GOLD}; font-weight:bold; margin-bottom:2px;'>"
+                f"&gt; USER:</p>"
+                f"<p style='color:{JARVIS_TEXT}; padding-left: 12px; margin-top:0;'>"
+                f"{escape(text)}</p>"
+            )
+            self.user_text_submitted.emit(text)
+            self.input_box.clear()
+
+    @Slot(str)
+    def update_video_mode_ui(self, mode):
+        self.current_video_mode = mode
+        self.webcam_button.setObjectName("")
+        self.screenshare_button.setObjectName("")
+        self.off_button.setObjectName("")
+
+        if mode == "camera":
+            self.webcam_button.setObjectName("video_button_active")
+        elif mode == "screen":
+            self.screenshare_button.setObjectName("video_button_active")
+        elif mode == "none":
+            self.off_button.setObjectName("video_button_active")
+            self.video_label.clear()
+
+        for button in [self.webcam_button, self.screenshare_button, self.off_button]:
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    @Slot(str)
+    def update_text(self, text):
+        if self.is_first_jarvis_chunk:
+            self.is_first_jarvis_chunk = False
+            self.text_display.append(
+                f"<p style='color:{JARVIS_BLUE}; font-weight:bold; margin-bottom:2px;'>"
+                f"&gt; J.A.R.V.I.S.:</p>"
+            )
+        cursor = self.text_display.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(text)
+        self.text_display.verticalScrollBar().setValue(
+            self.text_display.verticalScrollBar().maximum()
+        )
+
+    @Slot(list)
+    def update_search_results(self, urls):
+        base_title = "SYSTEM DIAGNOSTICS"
+        if not urls:
+            if "SEARCH" in self.tool_activity_title.text():
+                self.tool_activity_display.clear()
+                self.tool_activity_title.setText(base_title)
+            return
+        self.tool_activity_display.clear()
+        self.tool_activity_title.setText(f"{base_title} // SEARCH")
+        html_content = f'<p style="color:{JARVIS_GOLD}; margin-bottom:8px; font-size:9pt;">Search Results:</p>'
+        for i, url in enumerate(urls):
+            display_text = url.split('//')[1].split('/')[0] if '//' in url else url
+            html_content += (
+                f'<p style="margin:2px 0; padding: 3px;">'
+                f'{i+1}. <a href="{url}" style="color: {JARVIS_BLUE}; text-decoration: none;">'
+                f'{display_text}</a></p>'
+            )
+        self.tool_activity_display.setText(html_content)
+
+    @Slot(str, str)
+    def display_executed_code(self, code, result):
+        base_title = "SYSTEM DIAGNOSTICS"
+        if not code:
+            if "CODE" in self.tool_activity_title.text():
+                self.tool_activity_display.clear()
+                self.tool_activity_title.setText(base_title)
+            return
+        self.tool_activity_display.clear()
+        self.tool_activity_title.setText(f"{base_title} // CODE EXEC")
+        html = (
+            f'<p style="color:{JARVIS_GOLD}; margin-bottom:5px; font-size:9pt;">Executing Code:</p>'
+            f'<pre style="white-space: pre-wrap; word-wrap: break-word; color: {JARVIS_TEXT}; '
+            f'font-size: 9pt; line-height: 1.4;">{escape(code)}</pre>'
+        )
+        if result:
+            html += (
+                f'<p style="color:{JARVIS_GOLD}; font-weight:bold; margin-top:10px; '
+                f'margin-bottom: 5px;">&gt; OUTPUT:</p>'
+                f'<pre style="white-space: pre-wrap; word-wrap: break-word; color: #90EE90; '
+                f'font-size: 9pt;">{escape(result.strip())}</pre>'
+            )
+        self.tool_activity_display.setText(html)
+
+    @Slot(str, list)
+    def update_file_list(self, directory_path, files):
+        base_title = "SYSTEM DIAGNOSTICS"
+        if not directory_path:
+            if "FILESYS" in self.tool_activity_title.text():
+                self.tool_activity_display.clear()
+                self.tool_activity_title.setText(base_title)
+            return
+        self.tool_activity_display.clear()
+        self.tool_activity_title.setText(f"{base_title} // FILESYSTEM")
+        html = (
+            f'<p style="color:{JARVIS_GOLD}; margin-bottom: 5px;">'
+            f'DIR &gt; <strong>{escape(directory_path)}</strong></p>'
+        )
+        if not files:
+            html += f'<p style="margin-top:5px; color:{JARVIS_TEXT_DIM};"><em>(Directory is empty)</em></p>'
+        else:
+            folders = sorted([i for i in files if os.path.isdir(os.path.join(directory_path, i))])
+            file_items = sorted([i for i in files if not os.path.isdir(os.path.join(directory_path, i))])
+            html += '<ul style="list-style-type:none; padding-left: 5px; margin-top: 5px;">'
+            for folder in folders:
+                html += f'<li style="margin: 2px 0; color: {JARVIS_GOLD};">[+] {escape(folder)}</li>'
+            for file_item in file_items:
+                html += f'<li style="margin: 2px 0; color: {JARVIS_TEXT};">&#9679; {escape(file_item)}</li>'
+            html += '</ul>'
+        self.tool_activity_display.setText(html)
+
+    @Slot()
+    def add_newline(self):
+        if not self.is_first_jarvis_chunk:
+            self.text_display.append("")
+        self.is_first_jarvis_chunk = True
+
+    @Slot(QImage)
+    def update_frame(self, image):
+        if self.current_video_mode == "none":
+            if self.video_label.pixmap():
+                self.video_label.clear()
+            return
+        if not image.isNull():
+            pixmap = QPixmap.fromImage(image)
+            scaled_pixmap = pixmap.scaled(
+                self.video_container.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.video_label.setPixmap(scaled_pixmap)
+        else:
+            self.video_label.clear()
+
+    def closeEvent(self, event):
+        self.jarvis_core.stop()
+        event.accept()
+
+
+# ==============================================================================
+# MAIN EXECUTION
+# ==============================================================================
+if __name__ == "__main__":
+    try:
+        app = QApplication(sys.argv)
+        
+        # Set application-wide font
+        font = QFont("Segoe UI", 10)
+        app.setFont(font)
+        
+        window = JARVISWindow()
+        window.show()
+        sys.exit(app.exec())
+    except KeyboardInterrupt:
+        print("\n>>> [JARVIS] Shutting down at user request. Goodbye, Sir.")
+    finally:
+        pya.terminate()
+        print(">>> [JARVIS] All systems offline.")
