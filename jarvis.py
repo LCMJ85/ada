@@ -27,7 +27,8 @@ import shutil
 # --- PySide6 GUI Imports ---
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QLabel,
                                QVBoxLayout, QWidget, QLineEdit, QHBoxLayout,
-                               QSizePolicy, QPushButton, QFrame, QGraphicsDropShadowEffect)
+                               QSizePolicy, QPushButton, QFrame, QGraphicsDropShadowEffect,
+                               QComboBox)
 from PySide6.QtCore import QObject, Signal, Slot, Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import (QImage, QPixmap, QFont, QFontDatabase, QTextCursor,
                            QPainter, QPen, QVector3D, QMatrix4x4, QColor, QBrush,
@@ -285,9 +286,10 @@ class JARVIS_Core(QObject):
     speaking_stopped = Signal()
     system_info_received = Signal(str)
 
-    def __init__(self, video_mode=DEFAULT_MODE):
+    def __init__(self, video_mode=DEFAULT_MODE, mic_device_index=None):
         super().__init__()
         self.video_mode = video_mode
+        self.mic_device_index = mic_device_index
         self.is_running = True
         self.client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -780,11 +782,26 @@ class JARVIS_Core(QObject):
                 traceback.print_exc()
 
     async def listen_audio(self):
-        mic_info = pya.get_default_input_device_info()
-        self.audio_stream = pya.open(
-            format=FORMAT, channels=CHANNELS, rate=SEND_SAMPLE_RATE,
-            input=True, input_device_index=mic_info["index"], frames_per_buffer=CHUNK_SIZE
-        )
+        try:
+            if self.mic_device_index is not None:
+                mic_index = self.mic_device_index
+                mic_name = pya.get_device_info_by_index(mic_index).get('name', 'Unknown')
+                print(f">>> [JARVIS] Using selected microphone: '{mic_name}' (index {mic_index})")
+            else:
+                mic_info = pya.get_default_input_device_info()
+                mic_index = mic_info["index"]
+                print(f">>> [JARVIS] Using default microphone: '{mic_info.get('name', 'Unknown')}' (index {mic_index})")
+            
+            self.audio_stream = pya.open(
+                format=FORMAT, channels=CHANNELS, rate=SEND_SAMPLE_RATE,
+                input=True, input_device_index=mic_index, frames_per_buffer=CHUNK_SIZE
+            )
+            print(f">>> [JARVIS] Microphone stream opened successfully. Listening...")
+        except Exception as e:
+            print(f">>> [ERROR] Failed to open microphone: {e}")
+            print(f">>> [INFO] JARVIS will still work via text input.")
+            return
+        
         while self.is_running:
             data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
             if not self.is_running:
@@ -806,12 +823,24 @@ class JARVIS_Core(QObject):
                 self.text_input_queue.task_done()
                 break
             if self.session:
+                print(f">>> [JARVIS] Sending text to AI: '{text}'")
                 for q in [self.response_queue_tts, self.audio_in_queue_player]:
                     while not q.empty():
                         q.get_nowait()
-                await self.session.send_client_content(
-                    turns=[{"role": "user", "parts": [{"text": text or "."}]}]
-                )
+                try:
+                    await self.session.send(input=text or ".", end_of_turn=True)
+                    print(f">>> [JARVIS] Text sent successfully.")
+                except Exception as e:
+                    print(f">>> [ERROR] Failed to send text: {e}")
+                    try:
+                        await self.session.send_client_content(
+                            turns=[{"role": "user", "parts": [{"text": text or "."}]}]
+                        )
+                        print(f">>> [JARVIS] Text sent via fallback method.")
+                    except Exception as e2:
+                        print(f">>> [ERROR] Fallback also failed: {e2}")
+            else:
+                print(f">>> [WARNING] Session not ready yet. Please wait a moment and try again.")
             self.text_input_queue.task_done()
 
     async def tts(self):
@@ -1161,6 +1190,53 @@ class JARVISWindow(QMainWindow):
         self.button_container.addWidget(self.off_button)
         self.right_layout.addLayout(self.button_container)
 
+        # --- Microphone Selector ---
+        mic_label = QLabel("MICROPHONE")
+        mic_label.setObjectName("panel_title")
+        mic_label.setAlignment(Qt.AlignCenter)
+        self.right_layout.addWidget(mic_label)
+
+        self.mic_combo = QComboBox()
+        self.mic_combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {JARVIS_BG_DARK};
+                color: {JARVIS_GOLD};
+                border: 1px solid {JARVIS_BORDER};
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 9pt;
+                font-family: 'Consolas', 'Monaco', monospace;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {JARVIS_GOLD};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 30px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {JARVIS_GOLD};
+                margin-right: 10px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {JARVIS_BG_DARK};
+                color: {JARVIS_GOLD};
+                border: 1px solid {JARVIS_BORDER};
+                selection-background-color: {JARVIS_GOLD_DIM};
+                selection-color: {JARVIS_BG_DARK};
+                padding: 4px;
+            }}
+        """)
+        self._populate_microphones()
+        self.right_layout.addWidget(self.mic_combo)
+
+        self.mic_refresh_btn = QPushButton("REFRESH MICS")
+        self.mic_refresh_btn.clicked.connect(self._populate_microphones)
+        self.right_layout.addWidget(self.mic_refresh_btn)
+
         # --- System Info Label ---
         self.sys_info_label = QLabel()
         self.sys_info_label.setObjectName("tool_activity_display")
@@ -1197,13 +1273,57 @@ class JARVISWindow(QMainWindow):
         except:
             pass
 
+    def _populate_microphones(self):
+        """Scans and populates the microphone dropdown list."""
+        self.mic_combo.clear()
+        try:
+            import pyaudio
+            p = pyaudio.PyAudio()
+            default_index = -1
+            try:
+                default_info = p.get_default_input_device_info()
+                default_index = default_info.get('index', -1)
+            except:
+                pass
+            
+            for i in range(p.get_device_count()):
+                info = p.get_device_info_by_index(i)
+                if info.get('maxInputChannels', 0) > 0:
+                    name = info.get('name', f'Device {i}')
+                    label = f"{name}"
+                    if i == default_index:
+                        label = f"{name} (Default)"
+                    self.mic_combo.addItem(label, userData=i)
+            
+            p.terminate()
+            
+            if self.mic_combo.count() == 0:
+                self.mic_combo.addItem("No microphones found", userData=-1)
+            else:
+                # Select the default mic
+                for idx in range(self.mic_combo.count()):
+                    if self.mic_combo.itemData(idx) == default_index:
+                        self.mic_combo.setCurrentIndex(idx)
+                        break
+        except Exception as e:
+            self.mic_combo.addItem(f"Error: {e}", userData=-1)
+            print(f">>> [ERROR] Failed to enumerate microphones: {e}")
+
+    def _get_selected_mic_index(self):
+        """Returns the selected microphone device index."""
+        idx = self.mic_combo.currentData()
+        if idx is not None and idx >= 0:
+            return idx
+        return None
+
     def setup_backend_thread(self):
         parser = argparse.ArgumentParser()
         parser.add_argument("--mode", type=str, default=DEFAULT_MODE,
                           help="Video source mode", choices=["camera", "screen", "none"])
         args, unknown = parser.parse_known_args()
 
-        self.jarvis_core = JARVIS_Core(video_mode=args.mode)
+        mic_index = self._get_selected_mic_index()
+        self.jarvis_core = JARVIS_Core(video_mode=args.mode, mic_device_index=mic_index)
 
         self.user_text_submitted.connect(self.jarvis_core.handle_user_text)
         self.webcam_button.clicked.connect(lambda: self.jarvis_core.set_video_mode("camera"))
