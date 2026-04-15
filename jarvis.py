@@ -48,6 +48,10 @@ load_dotenv()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+print(f">>> [JARVIS] Loading configuration...")
+print(f">>> [JARVIS] GEMINI_API_KEY: {'Found (' + GEMINI_API_KEY[:8] + '...)' if GEMINI_API_KEY else 'NOT FOUND!'}")
+print(f">>> [JARVIS] ELEVENLABS_API_KEY: {'Found (' + ELEVENLABS_API_KEY[:8] + '...)' if ELEVENLABS_API_KEY else 'NOT FOUND!'}")
+
 if not GEMINI_API_KEY:
     sys.exit("Error: GEMINI_API_KEY not found. Please set it in your .env file.")
 if not ELEVENLABS_API_KEY:
@@ -62,7 +66,7 @@ CHUNK_SIZE = 1024
 MODEL = "gemini-live-2.5-flash-preview"
 VOICE_ID = 'pFZP5JQG7iQjIQuC4Bku'
 DEFAULT_MODE = "none"
-MAX_OUTPUT_TOKENS = 100
+MAX_OUTPUT_TOKENS = 8192
 
 # --- JARVIS Color Palette ---
 JARVIS_GOLD = "#FFD700"
@@ -712,6 +716,7 @@ class JARVIS_Core(QObject):
                 await self.out_queue_gemini.put(gemini_data)
 
     async def receive_text(self):
+        print(f">>> [JARVIS] Receive text task started. Waiting for AI responses...")
         while self.is_running:
             try:
                 turn_urls, turn_code_content, turn_code_result, file_list_data = set(), "", "", None
@@ -760,9 +765,11 @@ class JARVIS_Core(QObject):
                                     turn_code_result = part.code_execution_result.output
 
                     if chunk.text:
+                        print(f">>> [JARVIS] Received text chunk: '{chunk.text[:50]}...'" if len(chunk.text) > 50 else f">>> [JARVIS] Received text: '{chunk.text}'")
                         self.text_received.emit(chunk.text)
                         await self.response_queue_tts.put(chunk.text)
 
+                print(f">>> [JARVIS] End of turn reached.")
                 if file_list_data:
                     self.file_list_received.emit(file_list_data[0], file_list_data[1])
                 elif turn_code_content:
@@ -902,6 +909,7 @@ class JARVIS_Core(QObject):
 
     async def main_task_runner(self, session):
         self.session = session
+        print(f">>> [JARVIS] Starting all subsystems...")
         self.tasks.extend([
             asyncio.create_task(self.stream_video_to_gui()),
             asyncio.create_task(self.send_frames_to_gemini()),
@@ -912,16 +920,30 @@ class JARVIS_Core(QObject):
             asyncio.create_task(self.play_audio()),
             asyncio.create_task(self.process_text_input_queue())
         ])
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        print(f">>> [JARVIS] All {len(self.tasks)} subsystems launched successfully!")
+        print(f">>> [JARVIS] ========================================")
+        print(f">>> [JARVIS]   J.A.R.V.I.S. is READY for commands   ")
+        print(f">>> [JARVIS] ========================================")
+        results = await asyncio.gather(*self.tasks, return_exceptions=True)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f">>> [ERROR] Task {i} failed: {type(result).__name__}: {result}")
 
     async def run(self):
         try:
+            print(f">>> [JARVIS] Connecting to Gemini Live API (model: {MODEL})...")
             async with self.client.aio.live.connect(model=MODEL, config=self.config) as session:
+                print(f">>> [JARVIS] *** CONNECTION SUCCESSFUL! Systems online. ***")
+                print(f">>> [JARVIS] You can now speak or type commands.")
                 await self.main_task_runner(session)
         except asyncio.CancelledError:
             print(f"\n>>> [JARVIS] Core systems gracefully shutting down.")
         except Exception as e:
             print(f"\n>>> [ERROR] JARVIS Core error: {type(e).__name__}: {e}")
+            print(f">>> [ERROR] Full traceback:")
+            traceback.print_exc()
+            print(f"\n>>> [HINT] Check your GEMINI_API_KEY in .env file.")
+            print(f">>> [HINT] Make sure your internet connection is working.")
         finally:
             if self.is_running:
                 self.stop()
