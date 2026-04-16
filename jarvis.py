@@ -61,7 +61,7 @@ CHANNELS = 1
 SEND_SAMPLE_RATE = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
-MODEL = "gemini-2.5-flash-live-preview"
+MODEL = "gemini-2.0-flash-live-001"
 VOICE_ID = 'pFZP5JQG7iQjIQuC4Bku'
 MAX_OUTPUT_TOKENS = 8192
 
@@ -756,7 +756,10 @@ class JARVIS_Core(QObject):
             if not self.is_running: break
             try:
                 if self.session:
-                    await self.session.send(input=data)
+                    try:
+                        await self.session.send_realtime_input(audio=data)
+                    except AttributeError:
+                        await self.session.send(input=data)
             except Exception as e:
                 if self.is_running:
                     print(f">>> [ERROR] Send realtime error: {e}")
@@ -774,15 +777,16 @@ class JARVIS_Core(QObject):
                         try: q.get_nowait()
                         except: break
                 try:
-                    await self.session.send(input=text or ".", end_of_turn=True)
-                    print(f">>> [JARVIS] Text sent successfully.")
+                    await self.session.send_client_content(
+                        turns=[{"role": "user", "parts": [{"text": text or "."}]}],
+                        turn_complete=True
+                    )
+                    print(f">>> [JARVIS] Text sent successfully via send_client_content.")
                 except Exception as e:
-                    print(f">>> [ERROR] Failed to send text: {e}")
+                    print(f">>> [ERROR] send_client_content failed: {e}")
                     try:
-                        await self.session.send_client_content(
-                            turns=[{"role": "user", "parts": [{"text": text or "."}]}]
-                        )
-                        print(f">>> [JARVIS] Text sent via fallback method.")
+                        await self.session.send(input=text or ".", end_of_turn=True)
+                        print(f">>> [JARVIS] Text sent via fallback send().")
                     except Exception as e2:
                         print(f">>> [ERROR] Fallback also failed: {e2}")
             else:

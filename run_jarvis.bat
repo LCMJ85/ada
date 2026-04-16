@@ -11,8 +11,8 @@ echo.
 
 cd /d "%~dp0"
 
-echo  [*] Installing dependencies...
-pip install psutil >nul 2>&1
+echo  [*] Updating dependencies...
+pip install --upgrade google-genai psutil >nul 2>&1
 
 echo  [*] Launching J.A.R.V.I.S....
 echo.
