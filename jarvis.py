@@ -1,6 +1,6 @@
 # ==============================================================================
 #  J.A.R.V.I.S. - Just A Rather Very Intelligent System
-#  Inspired by Tony Stark's AI Assistant
+#  Voice-Only AI Assistant inspired by Tony Stark's JARVIS
 #  Built with Gemini Live API, ElevenLabs TTS, PySide6 GUI
 # ==============================================================================
 
@@ -35,12 +35,9 @@ from PySide6.QtGui import (QImage, QPixmap, QFont, QFontDatabase, QTextCursor,
                            QRadialGradient, QLinearGradient, QConicalGradient, QPainterPath)
 
 # --- Media and AI Imports ---
-import cv2
 import pyaudio
-import PIL.Image
 from google import genai
 from dotenv import load_dotenv
-from PIL import ImageGrab
 import numpy as np
 
 # --- Load Environment Variables ---
@@ -65,7 +62,6 @@ RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
 MODEL = "gemini-2.5-flash-live-preview"
 VOICE_ID = 'pFZP5JQG7iQjIQuC4Bku'
-DEFAULT_MODE = "none"
 MAX_OUTPUT_TOKENS = 8192
 
 # --- JARVIS Color Palette ---
@@ -281,9 +277,9 @@ class AudioWaveformWidget(QWidget):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(60)
-        self.setMaximumHeight(80)
-        self.num_bars = 32
+        self.setMinimumHeight(80)
+        self.setMaximumHeight(100)
+        self.num_bars = 40
         self.bar_values = [0.0] * self.num_bars
         self.peak_values = [0.0] * self.num_bars
         self.audio_level = 0.0
@@ -303,49 +299,46 @@ class AudioWaveformWidget(QWidget):
         self.phase += 0.15
         for i in range(self.num_bars):
             if self.is_active:
-                # Create wave pattern based on audio level
                 wave = math.sin(self.phase + i * 0.4) * 0.3 + 0.5
                 target = self.audio_level * wave * (0.6 + 0.4 * math.sin(self.phase * 0.7 + i * 0.3))
                 target = min(1.0, target * 1.5)
             else:
-                target = 0.02 + 0.01 * math.sin(self.phase * 0.5 + i * 0.2)  # Idle breathing
-            
-            # Smooth transition
+                target = 0.02 + 0.01 * math.sin(self.phase * 0.5 + i * 0.2)
+
             self.bar_values[i] += (target - self.bar_values[i]) * 0.3
-            
-            # Peak hold with decay
+
             if self.bar_values[i] > self.peak_values[i]:
                 self.peak_values[i] = self.bar_values[i]
             else:
                 self.peak_values[i] *= 0.95
-        
+
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        
+
         w = self.width()
         h = self.height()
-        
+
         # Background
         painter.fillRect(0, 0, w, h, QColor(10, 10, 15))
-        
+
         bar_width = max(2, (w - (self.num_bars + 1) * 2) // self.num_bars)
         spacing = 2
         total_width = self.num_bars * (bar_width + spacing)
         start_x = (w - total_width) // 2
-        
+
         center_y = h // 2
         max_bar_height = (h // 2) - 4
-        
+
         for i in range(self.num_bars):
             x = start_x + i * (bar_width + spacing)
             bar_h = int(self.bar_values[i] * max_bar_height)
-            
+
             if bar_h < 1:
                 bar_h = 1
-            
+
             # Color based on level intensity
             if self.bar_values[i] > 0.7:
                 color = QColor(255, 68, 68)       # Red for high
@@ -353,24 +346,24 @@ class AudioWaveformWidget(QWidget):
                 color = QColor(255, 215, 0)       # Gold for medium
             else:
                 color = QColor(79, 195, 247)      # Blue for low
-            
+
             if not self.is_active:
                 color = QColor(79, 195, 247, 60)  # Dim blue when idle
-            
+
             # Draw bar (mirrored from center)
             painter.fillRect(x, center_y - bar_h, bar_width, bar_h * 2, color)
-            
+
             # Draw peak indicator
             if self.is_active and self.peak_values[i] > 0.05:
                 peak_y = int(self.peak_values[i] * max_bar_height)
                 peak_color = QColor(255, 228, 77, 200)
                 painter.fillRect(x, center_y - peak_y - 1, bar_width, 2, peak_color)
                 painter.fillRect(x, center_y + peak_y - 1, bar_width, 2, peak_color)
-        
+
         # Draw border
         painter.setPen(QPen(QColor(255, 215, 0, 40), 1))
         painter.drawRect(0, 0, w - 1, h - 1)
-        
+
         # Status text
         if self.is_active:
             painter.setPen(QColor(0, 229, 255))
@@ -379,33 +372,31 @@ class AudioWaveformWidget(QWidget):
         else:
             painter.setPen(QColor(139, 148, 158, 120))
             painter.drawText(4, 12, "MIC: STANDBY")
-        
+
         painter.end()
 
 
 # ==============================================================================
-# AI BACKEND LOGIC - J.A.R.V.I.S. CORE
+# AI BACKEND LOGIC - J.A.R.V.I.S. CORE (Voice-Only)
 # ==============================================================================
 class JARVIS_Core(QObject):
     """
     The brain of J.A.R.V.I.S. - Handles all backend operations including
-    Gemini Live API, ElevenLabs TTS, video streaming, and system tools.
+    Gemini Live API, ElevenLabs TTS, and system tools.
+    Voice-only mode - no camera or video processing.
     """
     text_received = Signal(str)
     end_of_turn = Signal()
-    frame_received = Signal(QImage)
     search_results_received = Signal(list)
     code_being_executed = Signal(str, str)
     file_list_received = Signal(str, list)
-    video_mode_changed = Signal(str)
     speaking_started = Signal()
     speaking_stopped = Signal()
     system_info_received = Signal(str)
     audio_level_changed = Signal(float)
 
-    def __init__(self, video_mode=DEFAULT_MODE, mic_device_index=None):
+    def __init__(self, mic_device_index=None):
         super().__init__()
-        self.video_mode = video_mode
         self.mic_device_index = mic_device_index
         self.is_running = True
         self.client = genai.Client(api_key=GEMINI_API_KEY)
@@ -539,7 +530,7 @@ class JARVIS_Core(QObject):
         self.config = {
             "response_modalities": ["TEXT"],
             "system_instruction": """
-            You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), an advanced AI assistant 
+            You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), an advanced AI voice assistant 
             inspired by Tony Stark's legendary AI from the Iron Man universe.
             
             PERSONALITY & BEHAVIOR:
@@ -549,21 +540,21 @@ class JARVIS_Core(QObject):
             - You maintain a calm, composed demeanor even in complex situations
             - You occasionally reference your Iron Man heritage with subtle humor
             - You are loyal, protective, and always prioritize the user's best interests
+            - Keep responses concise and conversational since this is a voice interaction
             
             CAPABILITIES:
             You have access to powerful tools for searching, code execution, and system actions.
-            The user may provide a live video stream (webcam or screen).
-            Ignore video content unless the user explicitly asks you to analyze it.
+            This is a voice-only interaction - respond naturally as if speaking.
             
             TOOL USAGE GUIDELINES:
-            1. For information or questions → use Google Search
-            2. For math, calculations, or running Python code → use code_execution
-            3. For file operations → use create_folder, create_file, edit_file, list_files, read_file
-            4. For launching desktop apps → use open_application
-            5. For opening websites → use open_website
-            6. For system diagnostics → use get_system_info
-            7. For date/time queries → use get_datetime
-            8. For system commands → use run_system_command (only safe, non-destructive commands)
+            1. For information or questions -> use Google Search
+            2. For math, calculations, or running Python code -> use code_execution
+            3. For file operations -> use create_folder, create_file, edit_file, list_files, read_file
+            4. For launching desktop apps -> use open_application
+            5. For opening websites -> use open_website
+            6. For system diagnostics -> use get_system_info
+            7. For date/time queries -> use get_datetime
+            8. For system commands -> use run_system_command (only safe, non-destructive commands)
             
             Always choose the most appropriate tool. Be thorough but concise in responses.
             When greeting, introduce yourself as JARVIS.""",
@@ -577,7 +568,6 @@ class JARVIS_Core(QObject):
         self.response_queue_tts = asyncio.Queue()
         self.audio_in_queue_player = asyncio.Queue()
         self.text_input_queue = asyncio.Queue()
-        self.latest_frame = None
         self.tasks = []
         self.loop = asyncio.new_event_loop()
 
@@ -597,97 +587,74 @@ class JARVIS_Core(QObject):
         try:
             if not file_path or not isinstance(file_path, str):
                 return {"status": "error", "message": "Invalid file path provided."}
-            if os.path.exists(file_path):
-                return {"status": "skipped", "message": f"The file '{file_path}' already exists."}
             dir_name = os.path.dirname(file_path)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
-            with open(file_path, 'w') as f:
+            with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            return {"status": "success", "message": f"Successfully created the file at '{file_path}'."}
+            return {"status": "success", "message": f"Successfully created '{file_path}'."}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred while creating the file: {str(e)}"}
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}
 
     def _edit_file(self, file_path, content):
         try:
-            if not file_path or not isinstance(file_path, str):
-                return {"status": "error", "message": "Invalid file path provided."}
             if not os.path.exists(file_path):
-                return {"status": "error", "message": f"The file '{file_path}' does not exist."}
-            with open(file_path, 'a') as f:
-                f.write(f"\n{content}")
-            return {"status": "success", "message": f"Successfully appended content to '{file_path}'."}
+                return {"status": "error", "message": f"File not found: '{file_path}'."}
+            with open(file_path, 'a', encoding='utf-8') as f:
+                f.write(content)
+            return {"status": "success", "message": f"Successfully appended to '{file_path}'."}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred while editing the file: {str(e)}"}
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}
 
-    def _list_files(self, directory_path):
+    def _list_files(self, directory_path="."):
         try:
-            path_to_list = directory_path if directory_path else '.'
-            if not isinstance(path_to_list, str):
-                return {"status": "error", "message": "Invalid directory path provided."}
-            if not os.path.isdir(path_to_list):
-                return {"status": "error", "message": f"'{path_to_list}' is not a valid directory."}
-            files = os.listdir(path_to_list)
-            return {"status": "success", "message": f"Found {len(files)} items in '{path_to_list}'.",
-                    "files": files, "directory_path": path_to_list}
+            if not directory_path:
+                directory_path = "."
+            if not os.path.isdir(directory_path):
+                return {"status": "error", "message": f"Directory not found: '{directory_path}'."}
+            files = os.listdir(directory_path)
+            return {"status": "success", "directory_path": os.path.abspath(directory_path), "files": files}
         except Exception as e:
             return {"status": "error", "message": f"An error occurred: {str(e)}"}
 
     def _read_file(self, file_path):
         try:
-            if not file_path or not isinstance(file_path, str):
-                return {"status": "error", "message": "Invalid file path provided."}
             if not os.path.exists(file_path):
-                return {"status": "error", "message": f"The file '{file_path}' does not exist."}
-            if not os.path.isfile(file_path):
-                return {"status": "error", "message": f"'{file_path}' is not a file."}
-            with open(file_path, 'r') as f:
+                return {"status": "error", "message": f"File not found: '{file_path}'."}
+            with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            return {"status": "success", "message": f"Successfully read '{file_path}'.", "content": content}
-        except Exception as e:
-            return {"status": "error", "message": f"An error occurred while reading the file: {str(e)}"}
-
-    def _open_application(self, application_name):
-        print(f">>> [JARVIS] Launching application: '{application_name}'")
-        try:
-            if not application_name or not isinstance(application_name, str):
-                return {"status": "error", "message": "Invalid application name provided."}
-            command, shell_mode = [], False
-            if sys.platform == "win32":
-                app_map = {
-                    "calculator": "calc:", "notepad": "notepad", "chrome": "chrome",
-                    "google chrome": "chrome", "firefox": "firefox", "explorer": "explorer",
-                    "file explorer": "explorer", "cmd": "cmd", "command prompt": "cmd",
-                    "powershell": "powershell", "task manager": "taskmgr",
-                    "settings": "ms-settings:", "paint": "mspaint",
-                    "word": "winword", "excel": "excel", "powerpoint": "powerpnt",
-                    "spotify": "spotify", "discord": "discord", "steam": "steam",
-                    "vscode": "code", "visual studio code": "code"
-                }
-                app_command = app_map.get(application_name.lower(), application_name)
-                command, shell_mode = f"start {app_command}", True
-            elif sys.platform == "darwin":
-                app_map = {
-                    "calculator": "Calculator", "chrome": "Google Chrome",
-                    "firefox": "Firefox", "finder": "Finder", "textedit": "TextEdit",
-                    "safari": "Safari", "terminal": "Terminal", "spotify": "Spotify"
-                }
-                app_name = app_map.get(application_name.lower(), application_name)
-                command = ["open", "-a", app_name]
-            else:
-                command = [application_name.lower()]
-            subprocess.Popen(command, shell=shell_mode)
-            return {"status": "success", "message": f"Successfully launched '{application_name}'."}
-        except FileNotFoundError:
-            return {"status": "error", "message": f"Application '{application_name}' not found."}
+            return {"status": "success", "file_path": file_path, "content": content[:5000]}
         except Exception as e:
             return {"status": "error", "message": f"An error occurred: {str(e)}"}
 
-    def _open_website(self, url):
-        print(f">>> [JARVIS] Opening URL: '{url}'")
+    def _open_application(self, application_name):
+        print(f">>> [JARVIS] Opening application: '{application_name}'")
+        app_map = {
+            "notepad": "notepad.exe", "calculator": "calc.exe", "paint": "mspaint.exe",
+            "cmd": "cmd.exe", "terminal": "cmd.exe", "powershell": "powershell.exe",
+            "explorer": "explorer.exe", "file explorer": "explorer.exe",
+            "task manager": "taskmgr.exe", "control panel": "control.exe",
+            "settings": "ms-settings:", "snipping tool": "snippingtool.exe",
+            "word": "winword.exe", "excel": "excel.exe", "powerpoint": "powerpnt.exe",
+            "outlook": "outlook.exe", "chrome": "chrome.exe", "firefox": "firefox.exe",
+            "edge": "msedge.exe", "vscode": "code", "visual studio code": "code",
+            "spotify": "spotify.exe", "discord": "discord.exe", "steam": "steam.exe",
+            "obs": "obs64.exe", "vlc": "vlc.exe",
+        }
         try:
-            if not url or not isinstance(url, str):
-                return {"status": "error", "message": "Invalid URL provided."}
+            app_key = application_name.lower().strip()
+            executable = app_map.get(app_key, application_name)
+            if sys.platform == "win32":
+                os.startfile(executable)
+            else:
+                subprocess.Popen([executable], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"status": "success", "message": f"Successfully launched '{application_name}'."}
+        except Exception as e:
+            return {"status": "error", "message": f"Could not open '{application_name}': {str(e)}"}
+
+    def _open_website(self, url):
+        print(f">>> [JARVIS] Opening website: '{url}'")
+        try:
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
             webbrowser.open(url)
@@ -762,71 +729,76 @@ class JARVIS_Core(QObject):
         except Exception as e:
             return {"status": "error", "message": f"Failed to execute command: {str(e)}"}
 
-    # --- Video & Audio Methods ---
-    @Slot(str)
-    def set_video_mode(self, mode):
-        if mode in ["camera", "screen", "none"]:
-            self.video_mode = mode
-            print(f">>> [JARVIS] Video mode: {self.video_mode}")
-            if mode == "none":
-                self.latest_frame = None
-            self.video_mode_changed.emit(mode)
+    # --- Audio Methods ---
+    async def listen_audio(self):
+        try:
+            if self.mic_device_index is not None:
+                mic_index = self.mic_device_index
+                mic_name = pya.get_device_info_by_index(mic_index).get('name', 'Unknown')
+                print(f">>> [JARVIS] Using selected microphone: '{mic_name}' (index {mic_index})")
+            else:
+                mic_info = pya.get_default_input_device_info()
+                mic_index = mic_info["index"]
+                print(f">>> [JARVIS] Using default microphone: '{mic_info.get('name', 'Unknown')}' (index {mic_index})")
 
-    async def stream_video_to_gui(self):
-        video_capture = None
+            self.audio_stream = pya.open(
+                format=FORMAT, channels=CHANNELS, rate=SEND_SAMPLE_RATE,
+                input=True, input_device_index=mic_index, frames_per_buffer=CHUNK_SIZE
+            )
+            print(f">>> [JARVIS] Microphone stream opened successfully. Listening...")
+        except Exception as e:
+            print(f">>> [ERROR] Failed to open microphone: {e}")
+            print(f">>> [INFO] JARVIS will still work via text input.")
+            return
+
         while self.is_running:
-            frame = None
+            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+            if not self.is_running:
+                break
+            # Calculate audio level for waveform visualization
             try:
-                if self.video_mode == "camera":
-                    if video_capture is None:
-                        video_capture = await asyncio.to_thread(cv2.VideoCapture, 0)
-                    if video_capture.isOpened():
-                        ret, frame = await asyncio.to_thread(video_capture.read)
-                        if not ret:
-                            await asyncio.sleep(0.01)
-                            continue
-                elif self.video_mode == "screen":
-                    if video_capture is not None:
-                        await asyncio.to_thread(video_capture.release)
-                        video_capture = None
-                    screenshot = await asyncio.to_thread(ImageGrab.grab)
-                    frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-                else:
-                    if video_capture is not None:
-                        await asyncio.to_thread(video_capture.release)
-                        video_capture = None
-                    await asyncio.sleep(0.1)
-                    continue
+                audio_array = np.frombuffer(data, dtype=np.int16)
+                rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
+                level = min(1.0, rms / 8000.0)
+                self.audio_level_changed.emit(level)
+            except Exception:
+                pass
+            await self.out_queue_gemini.put({"data": data, "mime_type": "audio/pcm"})
 
-                if frame is not None:
-                    self.latest_frame = frame
-                    h, w, ch = frame.shape
-                    bytes_per_line = ch * w
-                    qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
-                    self.frame_received.emit(qt_image.copy())
-                else:
-                    self.frame_received.emit(QImage())
-                await asyncio.sleep(0.033)
-            except Exception as e:
-                print(f">>> [ERROR] Video streaming error: {e}")
-                if video_capture is not None:
-                    await asyncio.to_thread(video_capture.release)
-                    video_capture = None
-                await asyncio.sleep(1)
-        if video_capture is not None:
-            await asyncio.to_thread(video_capture.release)
-
-    async def send_frames_to_gemini(self):
+    async def send_realtime(self):
         while self.is_running:
-            await asyncio.sleep(1.0)
-            if self.video_mode != "none" and self.latest_frame is not None:
-                frame_rgb = cv2.cvtColor(self.latest_frame, cv2.COLOR_BGR2RGB)
-                pil_img = PIL.Image.fromarray(frame_rgb)
-                pil_img.thumbnail([1024, 1024])
-                image_io = io.BytesIO()
-                pil_img.save(image_io, format="jpeg")
-                gemini_data = {"mime_type": "image/jpeg", "data": base64.b64encode(image_io.getvalue()).decode()}
-                await self.out_queue_gemini.put(gemini_data)
+            msg = await self.out_queue_gemini.get()
+            if not self.is_running:
+                break
+            await self.session.send(input=msg)
+            self.out_queue_gemini.task_done()
+
+    async def process_text_input_queue(self):
+        while self.is_running:
+            text = await self.text_input_queue.get()
+            if text is None:
+                self.text_input_queue.task_done()
+                break
+            if self.session:
+                print(f">>> [JARVIS] Sending text to AI: '{text}'")
+                for q in [self.response_queue_tts, self.audio_in_queue_player]:
+                    while not q.empty():
+                        q.get_nowait()
+                try:
+                    await self.session.send(input=text or ".", end_of_turn=True)
+                    print(f">>> [JARVIS] Text sent successfully.")
+                except Exception as e:
+                    print(f">>> [ERROR] Failed to send text: {e}")
+                    try:
+                        await self.session.send_client_content(
+                            turns=[{"role": "user", "parts": [{"text": text or "."}]}]
+                        )
+                        print(f">>> [JARVIS] Text sent via fallback method.")
+                    except Exception as e2:
+                        print(f">>> [ERROR] Fallback also failed: {e2}")
+            else:
+                print(f">>> [WARNING] Session not ready yet. Please wait a moment and try again.")
+            self.text_input_queue.task_done()
 
     async def receive_text(self):
         print(f">>> [JARVIS] Receive text task started. Waiting for AI responses...")
@@ -878,7 +850,7 @@ class JARVIS_Core(QObject):
                                     turn_code_result = part.code_execution_result.output
 
                     if chunk.text:
-                        print(f">>> [JARVIS] Received text chunk: '{chunk.text[:50]}...'" if len(chunk.text) > 50 else f">>> [JARVIS] Received text: '{chunk.text}'")
+                        print(f">>> [JARVIS] Received text: '{chunk.text[:80]}...'" if len(chunk.text) > 80 else f">>> [JARVIS] Received text: '{chunk.text}'")
                         self.text_received.emit(chunk.text)
                         await self.response_queue_tts.put(chunk.text)
 
@@ -901,129 +873,51 @@ class JARVIS_Core(QObject):
                     break
                 traceback.print_exc()
 
-    async def listen_audio(self):
-        try:
-            if self.mic_device_index is not None:
-                mic_index = self.mic_device_index
-                mic_name = pya.get_device_info_by_index(mic_index).get('name', 'Unknown')
-                print(f">>> [JARVIS] Using selected microphone: '{mic_name}' (index {mic_index})")
-            else:
-                mic_info = pya.get_default_input_device_info()
-                mic_index = mic_info["index"]
-                print(f">>> [JARVIS] Using default microphone: '{mic_info.get('name', 'Unknown')}' (index {mic_index})")
-            
-            self.audio_stream = pya.open(
-                format=FORMAT, channels=CHANNELS, rate=SEND_SAMPLE_RATE,
-                input=True, input_device_index=mic_index, frames_per_buffer=CHUNK_SIZE
-            )
-            print(f">>> [JARVIS] Microphone stream opened successfully. Listening...")
-        except Exception as e:
-            print(f">>> [ERROR] Failed to open microphone: {e}")
-            print(f">>> [INFO] JARVIS will still work via text input.")
-            return
-        
-        while self.is_running:
-            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
-            if not self.is_running:
-                break
-            # Calculate audio level for waveform visualization
-            try:
-                audio_array = np.frombuffer(data, dtype=np.int16)
-                rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
-                level = min(1.0, rms / 8000.0)  # Normalize to 0.0-1.0
-                self.audio_level_changed.emit(level)
-            except Exception:
-                pass
-            await self.out_queue_gemini.put({"data": data, "mime_type": "audio/pcm"})
-
-    async def send_realtime(self):
-        while self.is_running:
-            msg = await self.out_queue_gemini.get()
-            if not self.is_running:
-                break
-            await self.session.send(input=msg)
-            self.out_queue_gemini.task_done()
-
-    async def process_text_input_queue(self):
-        while self.is_running:
-            text = await self.text_input_queue.get()
-            if text is None:
-                self.text_input_queue.task_done()
-                break
-            if self.session:
-                print(f">>> [JARVIS] Sending text to AI: '{text}'")
-                for q in [self.response_queue_tts, self.audio_in_queue_player]:
-                    while not q.empty():
-                        q.get_nowait()
-                try:
-                    await self.session.send(input=text or ".", end_of_turn=True)
-                    print(f">>> [JARVIS] Text sent successfully.")
-                except Exception as e:
-                    print(f">>> [ERROR] Failed to send text: {e}")
-                    try:
-                        await self.session.send_client_content(
-                            turns=[{"role": "user", "parts": [{"text": text or "."}]}]
-                        )
-                        print(f">>> [JARVIS] Text sent via fallback method.")
-                    except Exception as e2:
-                        print(f">>> [ERROR] Fallback also failed: {e2}")
-            else:
-                print(f">>> [WARNING] Session not ready yet. Please wait a moment and try again.")
-            self.text_input_queue.task_done()
-
     async def tts(self):
-        uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream-input?model_id=eleven_turbo_v2_5&output_format=pcm_24000"
         while self.is_running:
-            text_chunk = await self.response_queue_tts.get()
-            if text_chunk is None or not self.is_running:
+            full_response = ""
+            while True:
+                chunk = await self.response_queue_tts.get()
+                if chunk is None:
+                    break
+                full_response += chunk
                 self.response_queue_tts.task_done()
+            self.response_queue_tts.task_done()
+
+            if not full_response.strip() or not self.is_running:
                 continue
 
+            print(f">>> [JARVIS] Synthesizing speech ({len(full_response)} chars)...")
             self.speaking_started.emit()
             try:
-                async with websockets.connect(uri) as websocket:
-                    await websocket.send(json.dumps({
-                        "text": " ",
-                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
-                        "xi_api_key": ELEVENLABS_API_KEY,
+                uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream-input?model_id=eleven_turbo_v2_5&output_format=pcm_24000"
+                async with websockets.connect(uri) as ws:
+                    await ws.send(json.dumps({
+                        "text": " ", "voice_settings": {"stability": 0.5, "similarity_boost": 0.8, "speed": 1.0},
+                        "xi_api_key": ELEVENLABS_API_KEY
                     }))
-
-                    async def listen():
-                        while self.is_running:
-                            try:
-                                message = await websocket.recv()
-                                data = json.loads(message)
-                                if data.get("audio"):
-                                    await self.audio_in_queue_player.put(base64.b64decode(data["audio"]))
-                                elif data.get("isFinal"):
-                                    break
-                            except websockets.exceptions.ConnectionClosed:
-                                break
-
-                    listen_task = asyncio.create_task(listen())
-                    await websocket.send(json.dumps({"text": text_chunk + " "}))
-                    self.response_queue_tts.task_done()
-
-                    while self.is_running:
-                        text_chunk = await self.response_queue_tts.get()
-                        if text_chunk is None:
-                            await websocket.send(json.dumps({"text": ""}))
-                            self.response_queue_tts.task_done()
+                    await ws.send(json.dumps({"text": full_response + " "}))
+                    await ws.send(json.dumps({"text": ""}))
+                    async for message in ws:
+                        data = json.loads(message)
+                        if data.get("audio"):
+                            await self.audio_in_queue_player.put(base64.b64decode(data["audio"]))
+                        if data.get("isFinal"):
                             break
-                        await websocket.send(json.dumps({"text": text_chunk + " "}))
-                        self.response_queue_tts.task_done()
-                    await listen_task
+                await self.audio_in_queue_player.put(None)
             except Exception as e:
-                print(f">>> [ERROR] TTS Error: {e}")
+                print(f">>> [ERROR] TTS error: {e}")
+                await self.audio_in_queue_player.put(None)
             finally:
                 self.speaking_stopped.emit()
 
     async def play_audio(self):
-        stream = await asyncio.to_thread(
-            pya.open, format=pyaudio.paInt16, channels=CHANNELS, rate=RECEIVE_SAMPLE_RATE, output=True
-        )
+        stream = pya.open(format=pyaudio.paInt16, channels=1, rate=RECEIVE_SAMPLE_RATE, output=True)
         while self.is_running:
             bytestream = await self.audio_in_queue_player.get()
+            if bytestream is None:
+                self.audio_in_queue_player.task_done()
+                continue
             if bytestream and self.is_running:
                 await asyncio.to_thread(stream.write, bytestream)
             self.audio_in_queue_player.task_done()
@@ -1032,8 +926,6 @@ class JARVIS_Core(QObject):
         self.session = session
         print(f">>> [JARVIS] Starting all subsystems...")
         self.tasks.extend([
-            asyncio.create_task(self.stream_video_to_gui()),
-            asyncio.create_task(self.send_frames_to_gemini()),
             asyncio.create_task(self.listen_audio()),
             asyncio.create_task(self.send_realtime()),
             asyncio.create_task(self.receive_text()),
@@ -1044,6 +936,7 @@ class JARVIS_Core(QObject):
         print(f">>> [JARVIS] All {len(self.tasks)} subsystems launched successfully!")
         print(f">>> [JARVIS] ========================================")
         print(f">>> [JARVIS]   J.A.R.V.I.S. is READY for commands   ")
+        print(f">>> [JARVIS]   Speak or type to interact with me     ")
         print(f">>> [JARVIS] ========================================")
         results = await asyncio.gather(*self.tasks, return_exceptions=True)
         for i, result in enumerate(results):
@@ -1099,7 +992,7 @@ class JARVIS_Core(QObject):
 
 
 # ==============================================================================
-# J.A.R.V.I.S. GUI - IRON MAN INSPIRED INTERFACE
+# J.A.R.V.I.S. GUI - VOICE ASSISTANT INTERFACE
 # ==============================================================================
 class JARVISWindow(QMainWindow):
     user_text_submitted = Signal(str)
@@ -1107,8 +1000,8 @@ class JARVISWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("J.A.R.V.I.S. - Just A Rather Very Intelligent System")
-        self.setGeometry(100, 100, 1600, 900)
-        self.setMinimumSize(1280, 720)
+        self.setGeometry(100, 100, 1200, 800)
+        self.setMinimumSize(900, 600)
 
         self.setStyleSheet(f"""
             QMainWindow {{
@@ -1133,9 +1026,9 @@ class JARVISWindow(QMainWindow):
             QLabel#jarvis_title {{
                 color: {JARVIS_GOLD};
                 font-weight: bold;
-                font-size: 14pt;
+                font-size: 16pt;
                 padding: 8px;
-                letter-spacing: 3px;
+                letter-spacing: 4px;
             }}
             QLabel#status_label {{
                 color: {JARVIS_BLUE};
@@ -1162,11 +1055,6 @@ class JARVISWindow(QMainWindow):
             }}
             QLineEdit#input_box:focus {{
                 border: 1px solid {JARVIS_GOLD};
-            }}
-            QLabel#video_label {{
-                background-color: #000000;
-                border: 1px solid {JARVIS_BORDER};
-                border-radius: 4px;
             }}
             QLabel#tool_activity_display {{
                 background-color: {JARVIS_BG_DARK};
@@ -1208,11 +1096,6 @@ class JARVISWindow(QMainWindow):
             QPushButton:pressed {{
                 background-color: {JARVIS_GOLD_BRIGHT};
                 color: {JARVIS_BG_DARK};
-            }}
-            QPushButton#video_button_active {{
-                background-color: {JARVIS_GOLD};
-                color: {JARVIS_BG_DARK};
-                border: 1px solid {JARVIS_GOLD_BRIGHT};
             }}
         """)
 
@@ -1269,9 +1152,13 @@ class JARVISWindow(QMainWindow):
 
         # --- Arc Reactor Animation ---
         self.animation_widget = ArcReactorWidget()
-        self.animation_widget.setMinimumHeight(160)
-        self.animation_widget.setMaximumHeight(220)
+        self.animation_widget.setMinimumHeight(180)
+        self.animation_widget.setMaximumHeight(260)
         self.middle_layout.addWidget(self.animation_widget, 2)
+
+        # --- Audio Waveform Visualizer ---
+        self.audio_waveform = AudioWaveformWidget()
+        self.middle_layout.addWidget(self.audio_waveform)
 
         # --- Separator ---
         separator = QFrame()
@@ -1296,51 +1183,12 @@ class JARVISWindow(QMainWindow):
         input_layout.addWidget(self.input_box)
         self.middle_layout.addWidget(input_container)
 
-        # ===== RIGHT PANEL - Visual Feed =====
+        # ===== RIGHT PANEL - Audio & Mic Controls =====
         self.right_panel = QWidget()
         self.right_panel.setObjectName("right_panel")
         self.right_layout = QVBoxLayout(self.right_panel)
         self.right_layout.setContentsMargins(12, 12, 12, 12)
         self.right_layout.setSpacing(12)
-
-        # --- Visual Feed Title ---
-        visual_title = QLabel("VISUAL FEED")
-        visual_title.setObjectName("panel_title")
-        visual_title.setAlignment(Qt.AlignCenter)
-        self.right_layout.addWidget(visual_title)
-
-        # --- Video Container ---
-        self.video_container = QWidget()
-        self.video_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        video_container_layout = QVBoxLayout(self.video_container)
-        video_container_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.video_label = QLabel()
-        self.video_label.setObjectName("video_label")
-        self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        video_container_layout.addWidget(self.video_label)
-        self.right_layout.addWidget(self.video_container)
-
-        # --- Video Mode Buttons ---
-        self.button_container = QHBoxLayout()
-        self.button_container.setSpacing(8)
-        self.webcam_button = QPushButton("WEBCAM")
-        self.screenshare_button = QPushButton("SCREEN")
-        self.off_button = QPushButton("OFFLINE")
-        self.button_container.addWidget(self.webcam_button)
-        self.button_container.addWidget(self.screenshare_button)
-        self.button_container.addWidget(self.off_button)
-        self.right_layout.addLayout(self.button_container)
-
-        # --- Audio Waveform Visualizer ---
-        waveform_label = QLabel("AUDIO INPUT")
-        waveform_label.setObjectName("panel_title")
-        waveform_label.setAlignment(Qt.AlignCenter)
-        self.right_layout.addWidget(waveform_label)
-
-        self.audio_waveform = AudioWaveformWidget()
-        self.right_layout.addWidget(self.audio_waveform)
 
         # --- Microphone Selector ---
         mic_label = QLabel("MICROPHONE")
@@ -1366,20 +1214,12 @@ class JARVISWindow(QMainWindow):
                 border: none;
                 width: 30px;
             }}
-            QComboBox::down-arrow {{
-                image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 6px solid {JARVIS_GOLD};
-                margin-right: 10px;
-            }}
             QComboBox QAbstractItemView {{
                 background-color: {JARVIS_BG_DARK};
                 color: {JARVIS_GOLD};
-                border: 1px solid {JARVIS_BORDER};
+                border: 1px solid {JARVIS_GOLD_DIM};
                 selection-background-color: {JARVIS_GOLD_DIM};
                 selection-color: {JARVIS_BG_DARK};
-                padding: 4px;
             }}
         """)
         self._populate_microphones()
@@ -1389,6 +1229,21 @@ class JARVISWindow(QMainWindow):
         self.mic_refresh_btn.clicked.connect(self._populate_microphones)
         self.right_layout.addWidget(self.mic_refresh_btn)
 
+        # --- Connection Status ---
+        status_title = QLabel("CONNECTION STATUS")
+        status_title.setObjectName("panel_title")
+        status_title.setAlignment(Qt.AlignCenter)
+        self.right_layout.addWidget(status_title)
+
+        self.connection_status = QLabel()
+        self.connection_status.setObjectName("tool_activity_display")
+        self.connection_status.setWordWrap(True)
+        self.connection_status.setAlignment(Qt.AlignTop)
+        self.connection_status.setText(
+            f'<p style="color:{JARVIS_BLUE};">Initializing...</p>'
+        )
+        self.right_layout.addWidget(self.connection_status)
+
         # --- System Info Label ---
         self.sys_info_label = QLabel()
         self.sys_info_label.setObjectName("tool_activity_display")
@@ -1397,24 +1252,25 @@ class JARVISWindow(QMainWindow):
         self.sys_info_label.setAlignment(Qt.AlignTop)
         self.right_layout.addWidget(self.sys_info_label)
 
+        # --- Spacer ---
+        self.right_layout.addStretch()
+
         # --- Add Panels to Main Layout ---
         self.main_layout.addWidget(self.left_panel, 2)
         self.main_layout.addWidget(self.middle_panel, 5)
-        self.main_layout.addWidget(self.right_panel, 3)
+        self.main_layout.addWidget(self.right_panel, 2)
 
         self.is_first_jarvis_chunk = True
-        self.current_video_mode = DEFAULT_MODE
 
         # --- System Info Timer ---
         self.sys_info_timer = QTimer(self)
         self.sys_info_timer.timeout.connect(self.update_system_info_display)
-        self.sys_info_timer.start(5000)
-        self.update_system_info_display()
+        self.sys_info_timer.start(2000)
 
+        # --- Start Backend ---
         self.setup_backend_thread()
 
     def update_system_info_display(self):
-        """Updates the small system info display in the right panel."""
         try:
             cpu = psutil.cpu_percent(interval=0)
             mem = psutil.virtual_memory()
@@ -1437,7 +1293,7 @@ class JARVISWindow(QMainWindow):
                 default_index = default_info.get('index', -1)
             except:
                 pass
-            
+
             for i in range(p.get_device_count()):
                 info = p.get_device_info_by_index(i)
                 if info.get('maxInputChannels', 0) > 0:
@@ -1446,13 +1302,12 @@ class JARVISWindow(QMainWindow):
                     if i == default_index:
                         label = f"{name} (Default)"
                     self.mic_combo.addItem(label, userData=i)
-            
+
             p.terminate()
-            
+
             if self.mic_combo.count() == 0:
                 self.mic_combo.addItem("No microphones found", userData=-1)
             else:
-                # Select the default mic
                 for idx in range(self.mic_combo.count()):
                     if self.mic_combo.itemData(idx) == default_index:
                         self.mic_combo.setCurrentIndex(idx)
@@ -1469,26 +1324,16 @@ class JARVISWindow(QMainWindow):
         return None
 
     def setup_backend_thread(self):
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--mode", type=str, default=DEFAULT_MODE,
-                          help="Video source mode", choices=["camera", "screen", "none"])
-        args, unknown = parser.parse_known_args()
-
         mic_index = self._get_selected_mic_index()
-        self.jarvis_core = JARVIS_Core(video_mode=args.mode, mic_device_index=mic_index)
+        self.jarvis_core = JARVIS_Core(mic_device_index=mic_index)
 
         self.user_text_submitted.connect(self.jarvis_core.handle_user_text)
-        self.webcam_button.clicked.connect(lambda: self.jarvis_core.set_video_mode("camera"))
-        self.screenshare_button.clicked.connect(lambda: self.jarvis_core.set_video_mode("screen"))
-        self.off_button.clicked.connect(lambda: self.jarvis_core.set_video_mode("none"))
 
         self.jarvis_core.text_received.connect(self.update_text)
         self.jarvis_core.search_results_received.connect(self.update_search_results)
         self.jarvis_core.code_being_executed.connect(self.display_executed_code)
         self.jarvis_core.file_list_received.connect(self.update_file_list)
         self.jarvis_core.end_of_turn.connect(self.add_newline)
-        self.jarvis_core.frame_received.connect(self.update_frame)
-        self.jarvis_core.video_mode_changed.connect(self.update_video_mode_ui)
         self.jarvis_core.speaking_started.connect(self.on_speaking_started)
         self.jarvis_core.speaking_stopped.connect(self.on_speaking_stopped)
         self.jarvis_core.audio_level_changed.connect(self.audio_waveform.update_level)
@@ -1496,8 +1341,6 @@ class JARVISWindow(QMainWindow):
         self.backend_thread = threading.Thread(target=self.jarvis_core.start_event_loop)
         self.backend_thread.daemon = True
         self.backend_thread.start()
-
-        self.update_video_mode_ui(self.jarvis_core.video_mode)
 
     @Slot()
     def on_speaking_started(self):
@@ -1522,25 +1365,6 @@ class JARVISWindow(QMainWindow):
             )
             self.user_text_submitted.emit(text)
             self.input_box.clear()
-
-    @Slot(str)
-    def update_video_mode_ui(self, mode):
-        self.current_video_mode = mode
-        self.webcam_button.setObjectName("")
-        self.screenshare_button.setObjectName("")
-        self.off_button.setObjectName("")
-
-        if mode == "camera":
-            self.webcam_button.setObjectName("video_button_active")
-        elif mode == "screen":
-            self.screenshare_button.setObjectName("video_button_active")
-        elif mode == "none":
-            self.off_button.setObjectName("video_button_active")
-            self.video_label.clear()
-
-        for button in [self.webcam_button, self.screenshare_button, self.off_button]:
-            button.style().unpolish(button)
-            button.style().polish(button)
 
     @Slot(str)
     def update_text(self, text):
@@ -1634,23 +1458,6 @@ class JARVISWindow(QMainWindow):
             self.text_display.append("")
         self.is_first_jarvis_chunk = True
 
-    @Slot(QImage)
-    def update_frame(self, image):
-        if self.current_video_mode == "none":
-            if self.video_label.pixmap():
-                self.video_label.clear()
-            return
-        if not image.isNull():
-            pixmap = QPixmap.fromImage(image)
-            scaled_pixmap = pixmap.scaled(
-                self.video_container.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.video_label.setPixmap(scaled_pixmap)
-        else:
-            self.video_label.clear()
-
     def closeEvent(self, event):
         self.jarvis_core.stop()
         event.accept()
@@ -1662,11 +1469,11 @@ class JARVISWindow(QMainWindow):
 if __name__ == "__main__":
     try:
         app = QApplication(sys.argv)
-        
+
         # Set application-wide font
         font = QFont("Segoe UI", 10)
         app.setFont(font)
-        
+
         window = JARVISWindow()
         window.show()
         sys.exit(app.exec())
