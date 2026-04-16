@@ -15,6 +15,7 @@ import json
 import websockets
 import argparse
 import threading
+import random
 from html import escape
 import subprocess
 import webbrowser
@@ -79,206 +80,301 @@ JARVIS_TEXT = "#E8E8F0"
 JARVIS_TEXT_DIM = "#8B949E"
 JARVIS_BORDER = "#FFD70040"
 JARVIS_CYAN = "#00E5FF"
+JARVIS_AMBER = "#FF8C00"
+JARVIS_AMBER_BRIGHT = "#FFA500"
 
 # --- Initialize Clients ---
 pya = pyaudio.PyAudio()
 
 
 # ==============================================================================
-# ARC REACTOR ANIMATION WIDGET (Iron Man Style)
+# HOLOGRAPHIC SPHERE WIDGET (Iron Man Golden Globe Style)
 # ==============================================================================
-class ArcReactorWidget(QWidget):
+class HolographicSphereWidget(QWidget):
     """
-    A custom widget that renders an animated Arc Reactor inspired by Iron Man.
-    Pulses when JARVIS is speaking.
+    A large golden holographic sphere inspired by Tony Stark's JARVIS hologram.
+    Features rotating wireframe globe, energy particles, and radial energy lines.
+    Pulses and intensifies when JARVIS is speaking.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.angle = 0
-        self.inner_angle = 0
+        self.setMinimumHeight(350)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Animation state
+        self.angle_y = 0
+        self.angle_x = 0
+        self.angle_z = 0
         self.is_speaking = False
         self.pulse_phase = 0
-        self.energy_rings = []
-        self.particle_angle = 0
+        self.energy_phase = 0
+        self.particle_phase = 0
+        self.breath_phase = 0
+
+        # Pre-generate sphere wireframe points
+        self.sphere_points = []
+        self.longitude_lines = []
+        self.latitude_lines = []
+        self._generate_sphere_geometry()
+
+        # Floating particles
+        self.particles = []
+        for _ in range(60):
+            self.particles.append({
+                'angle': random.uniform(0, 360),
+                'dist': random.uniform(0.5, 1.4),
+                'speed': random.uniform(0.3, 1.5),
+                'size': random.uniform(1, 3),
+                'phase': random.uniform(0, math.pi * 2),
+                'y_offset': random.uniform(-0.8, 0.8),
+            })
+
+        # Energy rays
+        self.rays = []
+        for i in range(24):
+            self.rays.append({
+                'angle': (360 / 24) * i,
+                'length': random.uniform(0.3, 0.7),
+                'speed': random.uniform(0.5, 2.0),
+                'phase': random.uniform(0, math.pi * 2),
+            })
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_animation)
-        self.timer.start(25)
+        self.timer.start(20)
+
+    def _generate_sphere_geometry(self):
+        """Generate 3D sphere wireframe points."""
+        # Longitude lines (vertical circles)
+        num_lon = 16
+        num_points = 30
+        for i in range(num_lon):
+            lon_angle = (360 / num_lon) * i
+            line = []
+            for j in range(num_points + 1):
+                lat_angle = -90 + (180 / num_points) * j
+                x = math.cos(math.radians(lat_angle)) * math.cos(math.radians(lon_angle))
+                y = math.sin(math.radians(lat_angle))
+                z = math.cos(math.radians(lat_angle)) * math.sin(math.radians(lon_angle))
+                line.append((x, y, z))
+            self.longitude_lines.append(line)
+
+        # Latitude lines (horizontal circles)
+        num_lat = 10
+        for i in range(1, num_lat):
+            lat_angle = -90 + (180 / num_lat) * i
+            line = []
+            for j in range(num_points + 1):
+                lon_angle = (360 / num_points) * j
+                x = math.cos(math.radians(lat_angle)) * math.cos(math.radians(lon_angle))
+                y = math.sin(math.radians(lat_angle))
+                z = math.cos(math.radians(lat_angle)) * math.sin(math.radians(lon_angle))
+                line.append((x, y, z))
+            self.latitude_lines.append(line)
 
     def start_speaking_animation(self):
         self.is_speaking = True
 
     def stop_speaking_animation(self):
         self.is_speaking = False
-        self.pulse_phase = 0
-        self.update()
 
     def update_animation(self):
-        self.angle += 1.2
-        self.inner_angle -= 0.8
-        self.particle_angle += 2.0
+        speed = 1.5 if self.is_speaking else 0.6
+        self.angle_y += 0.4 * speed
+        self.angle_x += 0.15 * speed
+        self.angle_z += 0.1 * speed
+        self.energy_phase += 0.08 * speed
+        self.particle_phase += 0.05 * speed
+        self.breath_phase += 0.03
+
         if self.is_speaking:
-            self.pulse_phase += 0.15
+            self.pulse_phase += 0.12
             if self.pulse_phase > math.pi * 2:
                 self.pulse_phase -= math.pi * 2
-        if self.angle >= 360:
-            self.angle = 0
-        if self.inner_angle <= -360:
-            self.inner_angle = 0
-        if self.particle_angle >= 360:
-            self.particle_angle = 0
+
+        if self.angle_y >= 360:
+            self.angle_y -= 360
+
         self.update()
+
+    def _rotate_point(self, x, y, z):
+        """Apply 3D rotation to a point."""
+        # Rotate around Y axis
+        ry = math.radians(self.angle_y)
+        x2 = x * math.cos(ry) - z * math.sin(ry)
+        z2 = x * math.sin(ry) + z * math.cos(ry)
+
+        # Rotate around X axis (slight tilt)
+        rx = math.radians(self.angle_x * 0.3)
+        y2 = y * math.cos(rx) - z2 * math.sin(rx)
+        z3 = y * math.sin(rx) + z2 * math.cos(rx)
+
+        return x2, y2, z3
+
+    def _project(self, x, y, z, cx, cy, radius):
+        """Project 3D point to 2D screen coordinates."""
+        perspective = 3.0
+        scale = perspective / (perspective + z * 0.5)
+        sx = cx + x * radius * scale
+        sy = cy - y * radius * scale
+        return sx, sy, scale
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.transparent)
+        painter.fillRect(self.rect(), QColor(10, 10, 15, 0))
 
         w, h = self.width(), self.height()
         cx, cy = w / 2, h / 2
-        max_radius = min(w, h) / 2 - 10
+        base_radius = min(w, h) / 2 - 30
 
-        # Pulse factor when speaking
+        # Pulse when speaking
         pulse = 1.0
         if self.is_speaking:
-            pulse = 1.0 + 0.08 * math.sin(self.pulse_phase)
+            pulse = 1.0 + 0.06 * math.sin(self.pulse_phase)
+        breath = 1.0 + 0.015 * math.sin(self.breath_phase)
+        radius = base_radius * pulse * breath
 
-        # --- Outer Glow ---
-        glow_gradient = QRadialGradient(cx, cy, max_radius * 1.2)
-        glow_alpha = 60 if self.is_speaking else 30
-        glow_gradient.setColorAt(0, QColor(79, 195, 247, glow_alpha))
-        glow_gradient.setColorAt(0.5, QColor(79, 195, 247, glow_alpha // 3))
-        glow_gradient.setColorAt(1, QColor(79, 195, 247, 0))
+        # === OUTER GLOW ===
+        glow_r = radius * 1.6
+        glow_gradient = QRadialGradient(cx, cy, glow_r)
+        glow_alpha = 80 if self.is_speaking else 35
+        glow_gradient.setColorAt(0, QColor(255, 165, 0, glow_alpha))
+        glow_gradient.setColorAt(0.3, QColor(255, 140, 0, glow_alpha // 2))
+        glow_gradient.setColorAt(0.6, QColor(255, 100, 0, glow_alpha // 4))
+        glow_gradient.setColorAt(1, QColor(255, 80, 0, 0))
         painter.setBrush(QBrush(glow_gradient))
         painter.setPen(Qt.NoPen)
-        painter.drawEllipse(int(cx - max_radius * 1.2), int(cy - max_radius * 1.2),
-                           int(max_radius * 2.4), int(max_radius * 2.4))
+        painter.drawEllipse(int(cx - glow_r), int(cy - glow_r), int(glow_r * 2), int(glow_r * 2))
 
-        # --- Outer Ring ---
-        outer_r = max_radius * 0.85 * pulse
-        pen = QPen(QColor(79, 195, 247, 180), 2)
-        painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawEllipse(int(cx - outer_r), int(cy - outer_r), int(outer_r * 2), int(outer_r * 2))
+        # === ENERGY RAYS (radial lines from center) ===
+        for ray in self.rays:
+            ray_angle = math.radians(ray['angle'] + self.angle_y * 0.5)
+            ray_len = radius * (ray['length'] + 0.2 * math.sin(self.energy_phase * ray['speed'] + ray['phase']))
+            if self.is_speaking:
+                ray_len *= 1.4
+            end_x = cx + math.cos(ray_angle) * (radius * 0.9 + ray_len)
+            end_y = cy + math.sin(ray_angle) * (radius * 0.9 + ray_len)
+            start_x = cx + math.cos(ray_angle) * radius * 0.85
+            start_y = cy + math.sin(ray_angle) * radius * 0.85
 
-        # --- Rotating Segments (Outer) ---
-        painter.save()
-        painter.translate(cx, cy)
-        painter.rotate(self.angle)
-        segment_r = max_radius * 0.78 * pulse
-        num_segments = 12
-        for i in range(num_segments):
-            seg_angle = (360 / num_segments) * i
-            painter.save()
-            painter.rotate(seg_angle)
-            alpha = 120 + int(80 * math.sin(math.radians(seg_angle + self.angle)))
-            pen = QPen(QColor(79, 195, 247, alpha), 2.5)
+            alpha = int(40 + 30 * math.sin(self.energy_phase * ray['speed'] + ray['phase']))
+            if self.is_speaking:
+                alpha = min(255, alpha + 40)
+            pen = QPen(QColor(255, 180, 0, alpha), 1)
             painter.setPen(pen)
-            arc_len = 18
-            painter.drawArc(int(-segment_r), int(-segment_r),
-                          int(segment_r * 2), int(segment_r * 2),
-                          -arc_len * 16, arc_len * 2 * 16)
-            painter.restore()
-        painter.restore()
+            painter.drawLine(int(start_x), int(start_y), int(end_x), int(end_y))
 
-        # --- Middle Ring ---
-        mid_r = max_radius * 0.6 * pulse
-        pen = QPen(QColor(255, 215, 0, 100), 1.5)
-        painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawEllipse(int(cx - mid_r), int(cy - mid_r), int(mid_r * 2), int(mid_r * 2))
+        # === WIREFRAME SPHERE - Longitude Lines ===
+        for line in self.longitude_lines:
+            for j in range(len(line) - 1):
+                x1, y1, z1 = self._rotate_point(*line[j])
+                x2, y2, z2 = self._rotate_point(*line[j + 1])
+                sx1, sy1, s1 = self._project(x1, y1, z1, cx, cy, radius * 0.85)
+                sx2, sy2, s2 = self._project(x2, y2, z2, cx, cy, radius * 0.85)
 
-        # --- Counter-Rotating Inner Segments ---
-        painter.save()
-        painter.translate(cx, cy)
-        painter.rotate(self.inner_angle)
-        inner_seg_r = max_radius * 0.52 * pulse
-        num_inner = 8
-        for i in range(num_inner):
-            seg_angle = (360 / num_inner) * i
-            painter.save()
-            painter.rotate(seg_angle)
-            alpha = 100 + int(100 * math.sin(math.radians(seg_angle - self.inner_angle * 2)))
-            pen = QPen(QColor(255, 215, 0, alpha), 2)
-            painter.setPen(pen)
-            painter.drawArc(int(-inner_seg_r), int(-inner_seg_r),
-                          int(inner_seg_r * 2), int(inner_seg_r * 2),
-                          -12 * 16, 24 * 16)
-            painter.restore()
-        painter.restore()
+                # Depth-based alpha
+                avg_z = (z1 + z2) / 2
+                alpha = int(max(30, min(200, 120 + avg_z * 80)))
+                if self.is_speaking:
+                    alpha = min(255, alpha + 40)
 
-        # --- Inner Ring ---
-        inner_r = max_radius * 0.38 * pulse
-        pen = QPen(QColor(79, 195, 247, 150), 1.5)
-        painter.setPen(pen)
+                pen = QPen(QColor(255, 180, 40, alpha), max(0.5, 1.2 * ((s1 + s2) / 2)))
+                painter.setPen(pen)
+                painter.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+
+        # === WIREFRAME SPHERE - Latitude Lines ===
+        for line in self.latitude_lines:
+            for j in range(len(line) - 1):
+                x1, y1, z1 = self._rotate_point(*line[j])
+                x2, y2, z2 = self._rotate_point(*line[j + 1])
+                sx1, sy1, s1 = self._project(x1, y1, z1, cx, cy, radius * 0.85)
+                sx2, sy2, s2 = self._project(x2, y2, z2, cx, cy, radius * 0.85)
+
+                avg_z = (z1 + z2) / 2
+                alpha = int(max(20, min(160, 90 + avg_z * 70)))
+                if self.is_speaking:
+                    alpha = min(255, alpha + 30)
+
+                pen = QPen(QColor(255, 200, 60, alpha), max(0.4, 1.0 * ((s1 + s2) / 2)))
+                painter.setPen(pen)
+                painter.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+
+        # === INNER SPHERE GLOW ===
+        inner_r = radius * 0.4
+        inner_gradient = QRadialGradient(cx, cy, inner_r)
+        if self.is_speaking:
+            inner_gradient.setColorAt(0, QColor(255, 220, 100, 180))
+            inner_gradient.setColorAt(0.4, QColor(255, 165, 0, 100))
+            inner_gradient.setColorAt(0.8, QColor(255, 120, 0, 40))
+            inner_gradient.setColorAt(1, QColor(255, 100, 0, 0))
+        else:
+            inner_gradient.setColorAt(0, QColor(255, 200, 80, 120))
+            inner_gradient.setColorAt(0.4, QColor(255, 150, 0, 60))
+            inner_gradient.setColorAt(0.8, QColor(255, 120, 0, 20))
+            inner_gradient.setColorAt(1, QColor(255, 100, 0, 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(inner_gradient))
         painter.drawEllipse(int(cx - inner_r), int(cy - inner_r), int(inner_r * 2), int(inner_r * 2))
 
-        # --- Triangular Core Elements ---
-        painter.save()
-        painter.translate(cx, cy)
-        core_r = max_radius * 0.28 * pulse
-        num_triangles = 3
-        for i in range(num_triangles):
-            angle_offset = (360 / num_triangles) * i + self.angle * 0.5
-            rad = math.radians(angle_offset)
-            tx = core_r * math.cos(rad)
-            ty = core_r * math.sin(rad)
-            tri_size = max_radius * 0.06
-            path = QPainterPath()
-            path.moveTo(tx, ty - tri_size)
-            path.lineTo(tx - tri_size * 0.866, ty + tri_size * 0.5)
-            path.lineTo(tx + tri_size * 0.866, ty + tri_size * 0.5)
-            path.closeSubpath()
-            painter.setPen(QPen(QColor(79, 195, 247, 200), 1))
-            painter.setBrush(QBrush(QColor(79, 195, 247, 60)))
-            painter.drawPath(path)
-        painter.restore()
-
-        # --- Central Core (Bright) ---
-        core_size = max_radius * 0.18 * pulse
-        core_gradient = QRadialGradient(cx, cy, core_size)
-        if self.is_speaking:
-            core_gradient.setColorAt(0, QColor(255, 255, 255, 255))
-            core_gradient.setColorAt(0.3, QColor(129, 212, 250, 220))
-            core_gradient.setColorAt(0.7, QColor(79, 195, 247, 150))
-            core_gradient.setColorAt(1, QColor(79, 195, 247, 0))
-        else:
-            core_gradient.setColorAt(0, QColor(200, 230, 255, 220))
-            core_gradient.setColorAt(0.3, QColor(79, 195, 247, 180))
-            core_gradient.setColorAt(0.7, QColor(79, 195, 247, 100))
-            core_gradient.setColorAt(1, QColor(79, 195, 247, 0))
-        painter.setPen(Qt.NoPen)
+        # === BRIGHT CORE ===
+        core_r = radius * 0.12 * pulse
+        core_gradient = QRadialGradient(cx, cy, core_r)
+        core_gradient.setColorAt(0, QColor(255, 255, 255, 255))
+        core_gradient.setColorAt(0.3, QColor(255, 230, 150, 220))
+        core_gradient.setColorAt(0.6, QColor(255, 180, 50, 150))
+        core_gradient.setColorAt(1, QColor(255, 140, 0, 0))
         painter.setBrush(QBrush(core_gradient))
-        painter.drawEllipse(int(cx - core_size), int(cy - core_size),
-                           int(core_size * 2), int(core_size * 2))
+        painter.drawEllipse(int(cx - core_r), int(cy - core_r), int(core_r * 2), int(core_r * 2))
 
-        # --- Particle Effects (when speaking) ---
-        if self.is_speaking:
-            num_particles = 16
-            for i in range(num_particles):
-                p_angle = math.radians((360 / num_particles) * i + self.particle_angle)
-                dist = max_radius * (0.4 + 0.3 * math.sin(self.pulse_phase + i * 0.5))
-                px = cx + dist * math.cos(p_angle)
-                py = cy + dist * math.sin(p_angle)
-                p_size = 2 + math.sin(self.pulse_phase + i) * 1.5
-                p_alpha = int(100 + 100 * math.sin(self.pulse_phase + i * 0.7))
-                painter.setBrush(QBrush(QColor(79, 195, 247, p_alpha)))
-                painter.drawEllipse(int(px - p_size / 2), int(py - p_size / 2),
-                                   int(p_size), int(p_size))
+        # === FLOATING PARTICLES ===
+        for p in self.particles:
+            p_angle = math.radians(p['angle'] + self.particle_phase * p['speed'] * 60)
+            dist = radius * p['dist'] + radius * 0.1 * math.sin(self.energy_phase * p['speed'] + p['phase'])
+            if self.is_speaking:
+                dist *= 1.15
+
+            px = cx + math.cos(p_angle) * dist
+            py = cy + math.sin(p_angle) * dist * 0.6 + p['y_offset'] * radius * 0.3
+
+            alpha = int(80 + 60 * math.sin(self.energy_phase + p['phase']))
+            if self.is_speaking:
+                alpha = min(255, alpha + 60)
+            size = p['size'] * pulse
+
+            p_gradient = QRadialGradient(px, py, size * 2)
+            p_gradient.setColorAt(0, QColor(255, 200, 50, alpha))
+            p_gradient.setColorAt(0.5, QColor(255, 160, 0, alpha // 2))
+            p_gradient.setColorAt(1, QColor(255, 120, 0, 0))
+            painter.setBrush(QBrush(p_gradient))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(int(px - size * 2), int(py - size * 2), int(size * 4), int(size * 4))
+
+        # === OUTER RING ===
+        ring_r = radius * 0.92
+        ring_alpha = 120 if self.is_speaking else 60
+        pen = QPen(QColor(255, 180, 0, ring_alpha), 1.5)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(int(cx - ring_r), int(cy - ring_r), int(ring_r * 2), int(ring_r * 2))
+
+        # === SECOND OUTER RING ===
+        ring2_r = radius * 0.96
+        pen2 = QPen(QColor(255, 200, 50, ring_alpha // 2), 0.8)
+        painter.setPen(pen2)
+        painter.drawEllipse(int(cx - ring2_r), int(cy - ring2_r), int(ring2_r * 2), int(ring2_r * 2))
+
+        painter.end()
 
 
 # ==============================================================================
 # AUDIO WAVEFORM VISUALIZER (Microphone Level Indicator)
 # ==============================================================================
 class AudioWaveformWidget(QWidget):
-    """
-    A custom widget that displays real-time audio waveform/level bars
-    to visually indicate microphone input activity.
-    """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(80)
-        self.setMaximumHeight(100)
+        self.setMinimumHeight(60)
+        self.setMaximumHeight(70)
         self.num_bars = 40
         self.bar_values = [0.0] * self.num_bars
         self.peak_values = [0.0] * self.num_bars
@@ -291,7 +387,6 @@ class AudioWaveformWidget(QWidget):
         self.timer.start(40)
 
     def update_level(self, level):
-        """Update the audio level (0.0 to 1.0)."""
         self.audio_level = min(1.0, max(0.0, level))
         self.is_active = self.audio_level > 0.01
 
@@ -304,75 +399,55 @@ class AudioWaveformWidget(QWidget):
                 target = min(1.0, target * 1.5)
             else:
                 target = 0.02 + 0.01 * math.sin(self.phase * 0.5 + i * 0.2)
-
             self.bar_values[i] += (target - self.bar_values[i]) * 0.3
-
             if self.bar_values[i] > self.peak_values[i]:
                 self.peak_values[i] = self.bar_values[i]
             else:
                 self.peak_values[i] *= 0.95
-
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        w = self.width()
-        h = self.height()
-
-        # Background
+        w, h = self.width(), self.height()
         painter.fillRect(0, 0, w, h, QColor(10, 10, 15))
 
         bar_width = max(2, (w - (self.num_bars + 1) * 2) // self.num_bars)
         spacing = 2
         total_width = self.num_bars * (bar_width + spacing)
         start_x = (w - total_width) // 2
-
         center_y = h // 2
         max_bar_height = (h // 2) - 4
 
         for i in range(self.num_bars):
             x = start_x + i * (bar_width + spacing)
-            bar_h = int(self.bar_values[i] * max_bar_height)
+            bar_h = max(1, int(self.bar_values[i] * max_bar_height))
 
-            if bar_h < 1:
-                bar_h = 1
-
-            # Color based on level intensity
             if self.bar_values[i] > 0.7:
-                color = QColor(255, 68, 68)       # Red for high
+                color = QColor(255, 68, 68)
             elif self.bar_values[i] > 0.4:
-                color = QColor(255, 215, 0)       # Gold for medium
+                color = QColor(255, 215, 0)
             else:
-                color = QColor(79, 195, 247)      # Blue for low
-
+                color = QColor(255, 165, 0)
             if not self.is_active:
-                color = QColor(79, 195, 247, 60)  # Dim blue when idle
+                color = QColor(255, 165, 0, 40)
 
-            # Draw bar (mirrored from center)
             painter.fillRect(x, center_y - bar_h, bar_width, bar_h * 2, color)
 
-            # Draw peak indicator
             if self.is_active and self.peak_values[i] > 0.05:
                 peak_y = int(self.peak_values[i] * max_bar_height)
-                peak_color = QColor(255, 228, 77, 200)
-                painter.fillRect(x, center_y - peak_y - 1, bar_width, 2, peak_color)
-                painter.fillRect(x, center_y + peak_y - 1, bar_width, 2, peak_color)
+                painter.fillRect(x, center_y - peak_y - 1, bar_width, 2, QColor(255, 228, 77, 200))
+                painter.fillRect(x, center_y + peak_y - 1, bar_width, 2, QColor(255, 228, 77, 200))
 
-        # Draw border
-        painter.setPen(QPen(QColor(255, 215, 0, 40), 1))
+        painter.setPen(QPen(QColor(255, 165, 0, 40), 1))
         painter.drawRect(0, 0, w - 1, h - 1)
 
-        # Status text
         if self.is_active:
-            painter.setPen(QColor(0, 229, 255))
-            level_pct = int(self.audio_level * 100)
-            painter.drawText(4, 12, f"MIC ACTIVE: {level_pct}%")
+            painter.setPen(QColor(255, 200, 50))
+            painter.drawText(4, 12, f"MIC ACTIVE: {int(self.audio_level * 100)}%")
         else:
             painter.setPen(QColor(139, 148, 158, 120))
             painter.drawText(4, 12, "MIC: STANDBY")
-
         painter.end()
 
 
@@ -380,11 +455,6 @@ class AudioWaveformWidget(QWidget):
 # AI BACKEND LOGIC - J.A.R.V.I.S. CORE (Voice-Only)
 # ==============================================================================
 class JARVIS_Core(QObject):
-    """
-    The brain of J.A.R.V.I.S. - Handles all backend operations including
-    Gemini Live API, ElevenLabs TTS, and system tools.
-    Voice-only mode - no camera or video processing.
-    """
     text_received = Signal(str)
     end_of_turn = Signal()
     search_results_received = Signal(list)
@@ -394,6 +464,7 @@ class JARVIS_Core(QObject):
     speaking_stopped = Signal()
     system_info_received = Signal(str)
     audio_level_changed = Signal(float)
+    connection_status_changed = Signal(str)  # NEW: update connection status in GUI
 
     def __init__(self, mic_device_index=None):
         super().__init__()
@@ -404,117 +475,71 @@ class JARVIS_Core(QObject):
         # --- Tool Definitions ---
         create_folder = {
             "name": "create_folder",
-            "description": "Creates a new folder at the specified path relative to the script's root directory.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "folder_path": {"type": "STRING", "description": "The path for the new folder (e.g., 'new_project/assets')."}
-                },
-                "required": ["folder_path"]
-            }
+            "description": "Creates a new folder at the specified path.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "folder_path": {"type": "STRING", "description": "The path for the new folder."}
+            }, "required": ["folder_path"]}
         }
-
         create_file = {
             "name": "create_file",
-            "description": "Creates a new file with specified content at a given path.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "file_path": {"type": "STRING", "description": "The path for the new file."},
-                    "content": {"type": "STRING", "description": "The content to write into the new file."}
-                },
-                "required": ["file_path", "content"]
-            }
+            "description": "Creates a new file with specified content.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "file_path": {"type": "STRING", "description": "The path for the new file."},
+                "content": {"type": "STRING", "description": "The content to write."}
+            }, "required": ["file_path", "content"]}
         }
-
         edit_file = {
             "name": "edit_file",
-            "description": "Appends content to an existing file at a specified path.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "file_path": {"type": "STRING", "description": "The path of the file to edit."},
-                    "content": {"type": "STRING", "description": "The content to append to the file."}
-                },
-                "required": ["file_path", "content"]
-            }
+            "description": "Appends content to an existing file.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "file_path": {"type": "STRING", "description": "The path of the file."},
+                "content": {"type": "STRING", "description": "The content to append."}
+            }, "required": ["file_path", "content"]}
         }
-
         list_files = {
             "name": "list_files",
-            "description": "Lists all files and directories within a specified folder.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "directory_path": {"type": "STRING", "description": "The path of the directory to inspect. Defaults to '.' if omitted."}
-                }
-            }
+            "description": "Lists all files and directories within a folder.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "directory_path": {"type": "STRING", "description": "The directory path. Defaults to '.'."}
+            }}
         }
-
         read_file = {
             "name": "read_file",
-            "description": "Reads the entire content of a specified file.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "file_path": {"type": "STRING", "description": "The path of the file to read."}
-                },
-                "required": ["file_path"]
-            }
+            "description": "Reads the content of a file.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "file_path": {"type": "STRING", "description": "The path of the file."}
+            }, "required": ["file_path"]}
         }
-
         open_application = {
             "name": "open_application",
-            "description": "Opens or launches a desktop application on the user's computer.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "application_name": {"type": "STRING", "description": "The name of the application to open."}
-                },
-                "required": ["application_name"]
-            }
+            "description": "Opens a desktop application.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "application_name": {"type": "STRING", "description": "The application name."}
+            }, "required": ["application_name"]}
         }
-
         open_website = {
             "name": "open_website",
-            "description": "Opens a given URL in the default web browser.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "url": {"type": "STRING", "description": "The full URL of the website to open."}
-                },
-                "required": ["url"]
-            }
+            "description": "Opens a URL in the browser.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "url": {"type": "STRING", "description": "The URL to open."}
+            }, "required": ["url"]}
         }
-
         get_system_info = {
             "name": "get_system_info",
-            "description": "Gets current system information including CPU usage, memory, disk space, battery status, and uptime.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {}
-            }
+            "description": "Gets system info: CPU, memory, disk, battery, uptime.",
+            "parameters": {"type": "OBJECT", "properties": {}}
         }
-
         get_datetime = {
             "name": "get_datetime",
-            "description": "Gets the current date, time, and day of the week.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {}
-            }
+            "description": "Gets current date, time, and day.",
+            "parameters": {"type": "OBJECT", "properties": {}}
         }
-
         run_system_command = {
             "name": "run_system_command",
-            "description": "Executes a safe system shell command and returns the output. Only for non-destructive informational commands.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "command": {"type": "STRING", "description": "The shell command to execute (e.g., 'ipconfig', 'whoami', 'systeminfo')."}
-                },
-                "required": ["command"]
-            }
+            "description": "Executes a safe system command.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "command": {"type": "STRING", "description": "The command to execute."}
+            }, "required": ["command"]}
         }
 
         tools = [
@@ -574,162 +599,114 @@ class JARVIS_Core(QObject):
     # --- Tool Implementations ---
     def _create_folder(self, folder_path):
         try:
-            if not folder_path or not isinstance(folder_path, str):
-                return {"status": "error", "message": "Invalid folder path provided."}
-            if os.path.exists(folder_path):
-                return {"status": "skipped", "message": f"The folder '{folder_path}' already exists."}
+            if not folder_path: return {"status": "error", "message": "Invalid path."}
+            if os.path.exists(folder_path): return {"status": "skipped", "message": f"'{folder_path}' already exists."}
             os.makedirs(folder_path)
-            return {"status": "success", "message": f"Successfully created the folder at '{folder_path}'."}
+            return {"status": "success", "message": f"Created '{folder_path}'."}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _create_file(self, file_path, content):
         try:
-            if not file_path or not isinstance(file_path, str):
-                return {"status": "error", "message": "Invalid file path provided."}
-            dir_name = os.path.dirname(file_path)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            return {"status": "success", "message": f"Successfully created '{file_path}'."}
+            if not file_path: return {"status": "error", "message": "Invalid path."}
+            d = os.path.dirname(file_path)
+            if d: os.makedirs(d, exist_ok=True)
+            with open(file_path, 'w', encoding='utf-8') as f: f.write(content)
+            return {"status": "success", "message": f"Created '{file_path}'."}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _edit_file(self, file_path, content):
         try:
-            if not os.path.exists(file_path):
-                return {"status": "error", "message": f"File not found: '{file_path}'."}
-            with open(file_path, 'a', encoding='utf-8') as f:
-                f.write(content)
-            return {"status": "success", "message": f"Successfully appended to '{file_path}'."}
+            if not file_path or not os.path.exists(file_path):
+                return {"status": "error", "message": f"'{file_path}' not found."}
+            with open(file_path, 'a', encoding='utf-8') as f: f.write(content)
+            return {"status": "success", "message": f"Appended to '{file_path}'."}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _list_files(self, directory_path="."):
         try:
-            if not directory_path:
-                directory_path = "."
-            if not os.path.isdir(directory_path):
-                return {"status": "error", "message": f"Directory not found: '{directory_path}'."}
-            files = os.listdir(directory_path)
-            return {"status": "success", "directory_path": os.path.abspath(directory_path), "files": files}
+            p = directory_path or "."
+            if not os.path.isdir(p): return {"status": "error", "message": f"'{p}' is not a directory."}
+            return {"status": "success", "directory_path": p, "files": os.listdir(p)}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _read_file(self, file_path):
         try:
-            if not os.path.exists(file_path):
-                return {"status": "error", "message": f"File not found: '{file_path}'."}
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            return {"status": "success", "file_path": file_path, "content": content[:5000]}
+            if not file_path or not os.path.exists(file_path):
+                return {"status": "error", "message": f"'{file_path}' not found."}
+            with open(file_path, 'r', encoding='utf-8') as f: content = f.read(10000)
+            return {"status": "success", "content": content}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _open_application(self, application_name):
-        print(f">>> [JARVIS] Opening application: '{application_name}'")
         app_map = {
             "notepad": "notepad.exe", "calculator": "calc.exe", "paint": "mspaint.exe",
-            "cmd": "cmd.exe", "terminal": "cmd.exe", "powershell": "powershell.exe",
-            "explorer": "explorer.exe", "file explorer": "explorer.exe",
-            "task manager": "taskmgr.exe", "control panel": "control.exe",
-            "settings": "ms-settings:", "snipping tool": "snippingtool.exe",
+            "cmd": "cmd.exe", "powershell": "powershell.exe", "explorer": "explorer.exe",
+            "chrome": "chrome.exe", "firefox": "firefox.exe", "edge": "msedge.exe",
             "word": "winword.exe", "excel": "excel.exe", "powerpoint": "powerpnt.exe",
-            "outlook": "outlook.exe", "chrome": "chrome.exe", "firefox": "firefox.exe",
-            "edge": "msedge.exe", "vscode": "code", "visual studio code": "code",
-            "spotify": "spotify.exe", "discord": "discord.exe", "steam": "steam.exe",
-            "obs": "obs64.exe", "vlc": "vlc.exe",
+            "vscode": "code", "visual studio code": "code", "spotify": "spotify.exe",
+            "discord": "discord.exe", "slack": "slack.exe", "teams": "teams.exe",
+            "obs": "obs64.exe", "vlc": "vlc.exe", "steam": "steam.exe",
         }
         try:
-            app_key = application_name.lower().strip()
-            executable = app_map.get(app_key, application_name)
-            if sys.platform == "win32":
-                os.startfile(executable)
-            else:
-                subprocess.Popen([executable], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return {"status": "success", "message": f"Successfully launched '{application_name}'."}
+            name = application_name.lower().strip()
+            cmd = app_map.get(name, application_name)
+            subprocess.Popen(cmd, shell=True)
+            return {"status": "success", "message": f"Launched '{application_name}'."}
         except Exception as e:
-            return {"status": "error", "message": f"Could not open '{application_name}': {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _open_website(self, url):
-        print(f">>> [JARVIS] Opening website: '{url}'")
         try:
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
+            if not url.startswith(('http://', 'https://')): url = 'https://' + url
             webbrowser.open(url)
-            return {"status": "success", "message": f"Successfully opened '{url}'."}
+            return {"status": "success", "message": f"Opened '{url}'."}
         except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _get_system_info(self):
-        """Gathers comprehensive system information."""
         try:
-            info = {}
-            info["os"] = f"{platform.system()} {platform.release()} ({platform.architecture()[0]})"
-            info["hostname"] = platform.node()
-            info["cpu_usage"] = f"{psutil.cpu_percent(interval=0.5)}%"
-            info["cpu_cores"] = f"{psutil.cpu_count(logical=False)} physical, {psutil.cpu_count()} logical"
+            cpu = psutil.cpu_percent(interval=0.5)
             mem = psutil.virtual_memory()
-            info["memory_total"] = f"{mem.total / (1024**3):.1f} GB"
-            info["memory_used"] = f"{mem.used / (1024**3):.1f} GB ({mem.percent}%)"
-            info["memory_available"] = f"{mem.available / (1024**3):.1f} GB"
             disk = psutil.disk_usage('/')
-            info["disk_total"] = f"{disk.total / (1024**3):.1f} GB"
-            info["disk_used"] = f"{disk.used / (1024**3):.1f} GB ({disk.percent}%)"
-            info["disk_free"] = f"{disk.free / (1024**3):.1f} GB"
+            info = {
+                "cpu_percent": cpu, "ram_total_gb": round(mem.total / (1024**3), 1),
+                "ram_used_percent": mem.percent,
+                "disk_total_gb": round(disk.total / (1024**3), 1),
+                "disk_used_percent": round(disk.used / disk.total * 100, 1),
+                "os": f"{platform.system()} {platform.release()}",
+                "hostname": platform.node(),
+            }
             try:
-                battery = psutil.sensors_battery()
-                if battery:
-                    info["battery"] = f"{battery.percent}% {'(Charging)' if battery.power_plugged else '(On Battery)'}"
-                else:
-                    info["battery"] = "No battery detected (Desktop)"
-            except:
-                info["battery"] = "N/A"
-            boot_time = datetime.datetime.fromtimestamp(psutil.boot_time())
-            uptime = datetime.datetime.now() - boot_time
-            hours, remainder = divmod(int(uptime.total_seconds()), 3600)
-            minutes, _ = divmod(remainder, 60)
-            info["uptime"] = f"{hours}h {minutes}m"
-            return {"status": "success", "system_info": info}
+                bat = psutil.sensors_battery()
+                if bat: info["battery_percent"] = bat.percent; info["plugged_in"] = bat.power_plugged
+            except: pass
+            return {"status": "success", **info}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to retrieve system info: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
     def _get_datetime(self):
-        """Returns current date and time information."""
         now = datetime.datetime.now()
-        return {
-            "status": "success",
-            "date": now.strftime("%Y-%m-%d"),
-            "time": now.strftime("%H:%M:%S"),
-            "day": now.strftime("%A"),
-            "formatted": now.strftime("%A, %B %d, %Y at %I:%M %p")
-        }
+        return {"date": now.strftime("%Y-%m-%d"), "time": now.strftime("%H:%M:%S"), "day": now.strftime("%A")}
 
     def _run_system_command(self, command):
-        """Executes a safe system command."""
-        print(f">>> [JARVIS] Executing command: '{command}'")
         blocked = ['rm ', 'del ', 'format ', 'mkfs', 'dd ', ':(){', 'shutdown', 'reboot',
-                   'rm -rf', 'deltree', '> /dev/', 'fork', 'sudo rm']
-        for blocked_cmd in blocked:
-            if blocked_cmd.lower() in command.lower():
-                return {"status": "error", "message": f"Command blocked for safety: '{command}'"}
+                   'rmdir', 'rd ', '> /dev', 'fork', 'kill', 'taskkill']
+        if any(b in command.lower() for b in blocked):
+            return {"status": "blocked", "message": f"Command '{command}' is blocked for safety."}
         try:
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, timeout=15
-            )
-            output = result.stdout.strip() if result.stdout else ""
-            error = result.stderr.strip() if result.stderr else ""
-            if result.returncode == 0:
-                return {"status": "success", "output": output or "(No output)", "command": command}
-            else:
-                return {"status": "error", "output": output, "error": error, "command": command}
+            r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
+            return {"status": "success", "stdout": r.stdout[:3000], "stderr": r.stderr[:1000]}
         except subprocess.TimeoutExpired:
-            return {"status": "error", "message": f"Command timed out after 15 seconds: '{command}'"}
+            return {"status": "error", "message": "Command timed out."}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to execute command: {str(e)}"}
+            return {"status": "error", "message": str(e)}
 
-    # --- Audio Methods ---
+    # --- Audio & Communication ---
     async def listen_audio(self):
         try:
             if self.mic_device_index is not None:
@@ -741,49 +718,61 @@ class JARVIS_Core(QObject):
                 mic_index = mic_info["index"]
                 print(f">>> [JARVIS] Using default microphone: '{mic_info.get('name', 'Unknown')}' (index {mic_index})")
 
-            self.audio_stream = pya.open(
+            # Open mic stream in a thread to avoid blocking
+            self.audio_stream = await asyncio.to_thread(
+                pya.open,
                 format=FORMAT, channels=CHANNELS, rate=SEND_SAMPLE_RATE,
                 input=True, input_device_index=mic_index, frames_per_buffer=CHUNK_SIZE
             )
-            print(f">>> [JARVIS] Microphone stream opened successfully. Listening...")
+            print(f">>> [JARVIS] Microphone stream opened successfully! Listening...")
+            self.connection_status_changed.emit("MIC_READY")
         except Exception as e:
             print(f">>> [ERROR] Failed to open microphone: {e}")
-            print(f">>> [INFO] JARVIS will still work via text input.")
+            print(f">>> [INFO] Try selecting a different microphone from the dropdown.")
+            self.connection_status_changed.emit(f"MIC_ERROR: {e}")
             return
 
         while self.is_running:
-            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+            try:
+                data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+            except Exception as e:
+                print(f">>> [ERROR] Mic read error: {e}")
+                break
             if not self.is_running:
                 break
-            # Calculate audio level for waveform visualization
+            # Calculate audio level for waveform
             try:
                 audio_array = np.frombuffer(data, dtype=np.int16)
                 rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
                 level = min(1.0, rms / 8000.0)
                 self.audio_level_changed.emit(level)
-            except Exception:
+            except:
                 pass
             await self.out_queue_gemini.put({"data": data, "mime_type": "audio/pcm"})
 
     async def send_realtime(self):
         while self.is_running:
-            msg = await self.out_queue_gemini.get()
-            if not self.is_running:
-                break
-            await self.session.send(input=msg)
-            self.out_queue_gemini.task_done()
+            data = await self.out_queue_gemini.get()
+            if not self.is_running: break
+            try:
+                if self.session:
+                    await self.session.send(input=data)
+            except Exception as e:
+                if self.is_running:
+                    print(f">>> [ERROR] Send realtime error: {e}")
 
     async def process_text_input_queue(self):
         while self.is_running:
             text = await self.text_input_queue.get()
             if text is None:
-                self.text_input_queue.task_done()
                 break
             if self.session:
                 print(f">>> [JARVIS] Sending text to AI: '{text}'")
+                # Clear queues
                 for q in [self.response_queue_tts, self.audio_in_queue_player]:
                     while not q.empty():
-                        q.get_nowait()
+                        try: q.get_nowait()
+                        except: break
                 try:
                     await self.session.send(input=text or ".", end_of_turn=True)
                     print(f">>> [JARVIS] Text sent successfully.")
@@ -797,11 +786,11 @@ class JARVIS_Core(QObject):
                     except Exception as e2:
                         print(f">>> [ERROR] Fallback also failed: {e2}")
             else:
-                print(f">>> [WARNING] Session not ready yet. Please wait a moment and try again.")
+                print(f">>> [WARNING] Session not ready. Please wait and try again.")
             self.text_input_queue.task_done()
 
     async def receive_text(self):
-        print(f">>> [JARVIS] Receive text task started. Waiting for AI responses...")
+        print(f">>> [JARVIS] Receive text task started.")
         while self.is_running:
             try:
                 turn_urls, turn_code_content, turn_code_result, file_list_data = set(), "", "", None
@@ -811,28 +800,18 @@ class JARVIS_Core(QObject):
                         function_responses = []
                         for fc in chunk.tool_call.function_calls:
                             args, result = fc.args, {}
-                            if fc.name == "create_folder":
-                                result = self._create_folder(folder_path=args.get("folder_path"))
-                            elif fc.name == "create_file":
-                                result = self._create_file(file_path=args.get("file_path"), content=args.get("content"))
-                            elif fc.name == "edit_file":
-                                result = self._edit_file(file_path=args.get("file_path"), content=args.get("content"))
+                            if fc.name == "create_folder": result = self._create_folder(folder_path=args.get("folder_path"))
+                            elif fc.name == "create_file": result = self._create_file(file_path=args.get("file_path"), content=args.get("content"))
+                            elif fc.name == "edit_file": result = self._edit_file(file_path=args.get("file_path"), content=args.get("content"))
                             elif fc.name == "list_files":
                                 result = self._list_files(directory_path=args.get("directory_path"))
-                                if result.get("status") == "success":
-                                    file_list_data = (result.get("directory_path"), result.get("files"))
-                            elif fc.name == "read_file":
-                                result = self._read_file(file_path=args.get("file_path"))
-                            elif fc.name == "open_application":
-                                result = self._open_application(application_name=args.get("application_name"))
-                            elif fc.name == "open_website":
-                                result = self._open_website(url=args.get("url"))
-                            elif fc.name == "get_system_info":
-                                result = self._get_system_info()
-                            elif fc.name == "get_datetime":
-                                result = self._get_datetime()
-                            elif fc.name == "run_system_command":
-                                result = self._run_system_command(command=args.get("command"))
+                                if result.get("status") == "success": file_list_data = (result.get("directory_path"), result.get("files"))
+                            elif fc.name == "read_file": result = self._read_file(file_path=args.get("file_path"))
+                            elif fc.name == "open_application": result = self._open_application(application_name=args.get("application_name"))
+                            elif fc.name == "open_website": result = self._open_website(url=args.get("url"))
+                            elif fc.name == "get_system_info": result = self._get_system_info()
+                            elif fc.name == "get_datetime": result = self._get_datetime()
+                            elif fc.name == "run_system_command": result = self._run_system_command(command=args.get("command"))
                             function_responses.append({"id": fc.id, "name": fc.name, "response": result})
                         await self.session.send_tool_response(function_responses=function_responses)
                         continue
@@ -840,27 +819,21 @@ class JARVIS_Core(QObject):
                     if chunk.server_content:
                         if hasattr(chunk.server_content, 'grounding_metadata') and chunk.server_content.grounding_metadata:
                             for g_chunk in chunk.server_content.grounding_metadata.grounding_chunks:
-                                if g_chunk.web and g_chunk.web.uri:
-                                    turn_urls.add(g_chunk.web.uri)
+                                if g_chunk.web and g_chunk.web.uri: turn_urls.add(g_chunk.web.uri)
                         if chunk.server_content.model_turn:
                             for part in chunk.server_content.model_turn.parts:
-                                if part.executable_code:
-                                    turn_code_content = part.executable_code.code
-                                if part.code_execution_result:
-                                    turn_code_result = part.code_execution_result.output
+                                if part.executable_code: turn_code_content = part.executable_code.code
+                                if part.code_execution_result: turn_code_result = part.code_execution_result.output
 
                     if chunk.text:
-                        print(f">>> [JARVIS] Received text: '{chunk.text[:80]}...'" if len(chunk.text) > 80 else f">>> [JARVIS] Received text: '{chunk.text}'")
+                        print(f">>> [JARVIS] AI says: '{chunk.text[:80]}...'" if len(chunk.text) > 80 else f">>> [JARVIS] AI says: '{chunk.text}'")
                         self.text_received.emit(chunk.text)
                         await self.response_queue_tts.put(chunk.text)
 
-                print(f">>> [JARVIS] End of turn reached.")
-                if file_list_data:
-                    self.file_list_received.emit(file_list_data[0], file_list_data[1])
-                elif turn_code_content:
-                    self.code_being_executed.emit(turn_code_content, turn_code_result)
-                elif turn_urls:
-                    self.search_results_received.emit(list(turn_urls))
+                print(f">>> [JARVIS] End of turn.")
+                if file_list_data: self.file_list_received.emit(file_list_data[0], file_list_data[1])
+                elif turn_code_content: self.code_being_executed.emit(turn_code_content, turn_code_result)
+                elif turn_urls: self.search_results_received.emit(list(turn_urls))
                 else:
                     self.code_being_executed.emit("", "")
                     self.search_results_received.emit([])
@@ -869,8 +842,7 @@ class JARVIS_Core(QObject):
                 self.end_of_turn.emit()
                 await self.response_queue_tts.put(None)
             except Exception:
-                if not self.is_running:
-                    break
+                if not self.is_running: break
                 traceback.print_exc()
 
     async def tts(self):
@@ -878,16 +850,14 @@ class JARVIS_Core(QObject):
             full_response = ""
             while True:
                 chunk = await self.response_queue_tts.get()
-                if chunk is None:
-                    break
+                if chunk is None: break
                 full_response += chunk
                 self.response_queue_tts.task_done()
             self.response_queue_tts.task_done()
 
-            if not full_response.strip() or not self.is_running:
-                continue
+            if not full_response.strip() or not self.is_running: continue
 
-            print(f">>> [JARVIS] Synthesizing speech ({len(full_response)} chars)...")
+            print(f">>> [JARVIS] Speaking: '{full_response[:60]}...'")
             self.speaking_started.emit()
             try:
                 uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream-input?model_id=eleven_turbo_v2_5&output_format=pcm_24000"
@@ -902,8 +872,7 @@ class JARVIS_Core(QObject):
                         data = json.loads(message)
                         if data.get("audio"):
                             await self.audio_in_queue_player.put(base64.b64decode(data["audio"]))
-                        if data.get("isFinal"):
-                            break
+                        if data.get("isFinal"): break
                 await self.audio_in_queue_player.put(None)
             except Exception as e:
                 print(f">>> [ERROR] TTS error: {e}")
@@ -925,6 +894,8 @@ class JARVIS_Core(QObject):
     async def main_task_runner(self, session):
         self.session = session
         print(f">>> [JARVIS] Starting all subsystems...")
+        self.connection_status_changed.emit("CONNECTED")
+
         self.tasks.extend([
             asyncio.create_task(self.listen_audio()),
             asyncio.create_task(self.send_realtime()),
@@ -933,19 +904,19 @@ class JARVIS_Core(QObject):
             asyncio.create_task(self.play_audio()),
             asyncio.create_task(self.process_text_input_queue())
         ])
-        print(f">>> [JARVIS] All {len(self.tasks)} subsystems launched successfully!")
+        print(f">>> [JARVIS] All {len(self.tasks)} subsystems launched!")
         print(f">>> [JARVIS] ========================================")
         print(f">>> [JARVIS]   J.A.R.V.I.S. is READY for commands   ")
         print(f">>> [JARVIS]   Speak or type to interact with me     ")
         print(f">>> [JARVIS] ========================================")
 
         # --- Welcome Greeting ---
-        await asyncio.sleep(1.5)  # Wait for all systems to stabilize
-        welcome_text = "Good day, Sir. J.A.R.V.I.S. at your service. All systems are online and fully operational. How may I assist you today?"
+        await asyncio.sleep(2)
+        welcome = "Good day, Sir. J.A.R.V.I.S. at your service. All systems are online and fully operational. How may I assist you today?"
         print(f">>> [JARVIS] Playing welcome greeting...")
-        self.text_received.emit("Good day, Sir. J.A.R.V.I.S. at your service. All systems are online and fully operational. How may I assist you today?")
+        self.text_received.emit(welcome)
         self.end_of_turn.emit()
-        await self.response_queue_tts.put(welcome_text)
+        await self.response_queue_tts.put(welcome)
         await self.response_queue_tts.put(None)
 
         results = await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -954,23 +925,34 @@ class JARVIS_Core(QObject):
                 print(f">>> [ERROR] Task {i} failed: {type(result).__name__}: {result}")
 
     async def run(self):
-        try:
-            print(f">>> [JARVIS] Connecting to Gemini Live API (model: {MODEL})...")
-            async with self.client.aio.live.connect(model=MODEL, config=self.config) as session:
-                print(f">>> [JARVIS] *** CONNECTION SUCCESSFUL! Systems online. ***")
-                print(f">>> [JARVIS] You can now speak or type commands.")
-                await self.main_task_runner(session)
-        except asyncio.CancelledError:
-            print(f"\n>>> [JARVIS] Core systems gracefully shutting down.")
-        except Exception as e:
-            print(f"\n>>> [ERROR] JARVIS Core error: {type(e).__name__}: {e}")
-            print(f">>> [ERROR] Full traceback:")
-            traceback.print_exc()
-            print(f"\n>>> [HINT] Check your GEMINI_API_KEY in .env file.")
-            print(f">>> [HINT] Make sure your internet connection is working.")
-        finally:
-            if self.is_running:
-                self.stop()
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f">>> [JARVIS] Connecting to Gemini Live API (model: {MODEL})... (attempt {attempt}/{max_retries})")
+                self.connection_status_changed.emit("CONNECTING")
+                async with self.client.aio.live.connect(model=MODEL, config=self.config) as session:
+                    print(f">>> [JARVIS] *** CONNECTION SUCCESSFUL! ***")
+                    await self.main_task_runner(session)
+                    return  # Normal exit
+            except asyncio.CancelledError:
+                print(f"\n>>> [JARVIS] Shutting down gracefully.")
+                return
+            except Exception as e:
+                print(f"\n>>> [ERROR] Connection attempt {attempt} failed: {type(e).__name__}: {e}")
+                self.connection_status_changed.emit(f"ERROR: {e}")
+                if attempt < max_retries:
+                    wait = attempt * 3
+                    print(f">>> [JARVIS] Retrying in {wait} seconds...")
+                    await asyncio.sleep(wait)
+                else:
+                    print(f">>> [ERROR] All {max_retries} connection attempts failed.")
+                    print(f">>> [HINT] Check your GEMINI_API_KEY in .env file.")
+                    print(f">>> [HINT] Make sure your internet connection is working.")
+                    print(f">>> [HINT] Try model name: gemini-2.0-flash-live-001")
+                    traceback.print_exc()
+
+        if self.is_running:
+            self.stop()
 
     def start_event_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -992,17 +974,15 @@ class JARVIS_Core(QObject):
         if self.is_running and self.loop.is_running():
             self.is_running = False
             future = asyncio.run_coroutine_threadsafe(self.shutdown_async_tasks(), self.loop)
-            try:
-                future.result(timeout=5)
-            except Exception as e:
-                print(f">>> [ERROR] Shutdown error: {e}")
+            try: future.result(timeout=5)
+            except Exception as e: print(f">>> [ERROR] Shutdown error: {e}")
         if self.audio_stream and self.audio_stream.is_active():
             self.audio_stream.stop_stream()
             self.audio_stream.close()
 
 
 # ==============================================================================
-# J.A.R.V.I.S. GUI - VOICE ASSISTANT INTERFACE
+# GUI - J.A.R.V.I.S. MAIN WINDOW
 # ==============================================================================
 class JARVISWindow(QMainWindow):
     user_text_submitted = Signal(str)
@@ -1010,8 +990,8 @@ class JARVISWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("J.A.R.V.I.S. - Just A Rather Very Intelligent System")
-        self.setGeometry(100, 100, 1200, 800)
-        self.setMinimumSize(900, 600)
+        self.setGeometry(50, 50, 1400, 900)
+        self.setMinimumSize(1000, 700)
 
         self.setStyleSheet(f"""
             QMainWindow {{
@@ -1036,12 +1016,12 @@ class JARVISWindow(QMainWindow):
             QLabel#jarvis_title {{
                 color: {JARVIS_GOLD};
                 font-weight: bold;
-                font-size: 16pt;
+                font-size: 18pt;
                 padding: 8px;
-                letter-spacing: 4px;
+                letter-spacing: 5px;
             }}
             QLabel#status_label {{
-                color: {JARVIS_BLUE};
+                color: {JARVIS_AMBER};
                 font-size: 9pt;
                 padding: 4px 8px;
                 letter-spacing: 1px;
@@ -1076,15 +1056,10 @@ class JARVISWindow(QMainWindow):
                 padding: 10px;
             }}
             QScrollBar:vertical {{
-                border: none;
-                background: {JARVIS_BG_PANEL};
-                width: 8px;
-                margin: 0px;
+                border: none; background: {JARVIS_BG_PANEL}; width: 8px; margin: 0px;
             }}
             QScrollBar::handle:vertical {{
-                background: {JARVIS_GOLD_DIM};
-                min-height: 20px;
-                border-radius: 4px;
+                background: {JARVIS_GOLD_DIM}; min-height: 20px; border-radius: 4px;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
@@ -1101,7 +1076,6 @@ class JARVISWindow(QMainWindow):
             QPushButton:hover {{
                 background-color: {JARVIS_GOLD};
                 color: {JARVIS_BG_DARK};
-                border: 1px solid {JARVIS_GOLD};
             }}
             QPushButton:pressed {{
                 background-color: {JARVIS_GOLD_BRIGHT};
@@ -1144,8 +1118,8 @@ class JARVISWindow(QMainWindow):
         # --- Header ---
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(0)
+        header_layout.setContentsMargins(0, 8, 0, 0)
+        header_layout.setSpacing(2)
         header_layout.setAlignment(Qt.AlignCenter)
 
         self.jarvis_title = QLabel("J . A . R . V . I . S .")
@@ -1153,20 +1127,18 @@ class JARVISWindow(QMainWindow):
         self.jarvis_title.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(self.jarvis_title)
 
-        self.status_label = QLabel("SYSTEMS ONLINE  //  READY")
+        self.status_label = QLabel("INITIALIZING SYSTEMS...")
         self.status_label.setObjectName("status_label")
         self.status_label.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(self.status_label)
 
         self.middle_layout.addWidget(header_widget)
 
-        # --- Arc Reactor Animation ---
-        self.animation_widget = ArcReactorWidget()
-        self.animation_widget.setMinimumHeight(180)
-        self.animation_widget.setMaximumHeight(260)
-        self.middle_layout.addWidget(self.animation_widget, 2)
+        # --- Holographic Sphere (LARGE) ---
+        self.animation_widget = HolographicSphereWidget()
+        self.middle_layout.addWidget(self.animation_widget, 5)
 
-        # --- Audio Waveform Visualizer ---
+        # --- Audio Waveform ---
         self.audio_waveform = AudioWaveformWidget()
         self.middle_layout.addWidget(self.audio_waveform)
 
@@ -1180,7 +1152,7 @@ class JARVISWindow(QMainWindow):
         self.text_display = QTextEdit()
         self.text_display.setObjectName("text_display")
         self.text_display.setReadOnly(True)
-        self.middle_layout.addWidget(self.text_display, 5)
+        self.middle_layout.addWidget(self.text_display, 3)
 
         # --- Input Box ---
         input_container = QWidget()
@@ -1193,7 +1165,7 @@ class JARVISWindow(QMainWindow):
         input_layout.addWidget(self.input_box)
         self.middle_layout.addWidget(input_container)
 
-        # ===== RIGHT PANEL - Audio & Mic Controls =====
+        # ===== RIGHT PANEL - Controls =====
         self.right_panel = QWidget()
         self.right_panel.setObjectName("right_panel")
         self.right_layout = QVBoxLayout(self.right_panel)
@@ -1209,27 +1181,16 @@ class JARVISWindow(QMainWindow):
         self.mic_combo = QComboBox()
         self.mic_combo.setStyleSheet(f"""
             QComboBox {{
-                background-color: {JARVIS_BG_DARK};
-                color: {JARVIS_GOLD};
-                border: 1px solid {JARVIS_BORDER};
-                border-radius: 4px;
-                padding: 8px 12px;
-                font-size: 9pt;
-                font-family: 'Consolas', 'Monaco', monospace;
+                background-color: {JARVIS_BG_DARK}; color: {JARVIS_GOLD};
+                border: 1px solid {JARVIS_BORDER}; border-radius: 4px;
+                padding: 8px 12px; font-size: 9pt;
             }}
-            QComboBox:hover {{
-                border: 1px solid {JARVIS_GOLD};
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 30px;
-            }}
+            QComboBox:hover {{ border: 1px solid {JARVIS_GOLD}; }}
+            QComboBox::drop-down {{ border: none; width: 30px; }}
             QComboBox QAbstractItemView {{
-                background-color: {JARVIS_BG_DARK};
-                color: {JARVIS_GOLD};
+                background-color: {JARVIS_BG_DARK}; color: {JARVIS_GOLD};
                 border: 1px solid {JARVIS_GOLD_DIM};
-                selection-background-color: {JARVIS_GOLD_DIM};
-                selection-color: {JARVIS_BG_DARK};
+                selection-background-color: {JARVIS_GOLD_DIM}; selection-color: {JARVIS_BG_DARK};
             }}
         """)
         self._populate_microphones()
@@ -1249,12 +1210,10 @@ class JARVISWindow(QMainWindow):
         self.connection_status.setObjectName("tool_activity_display")
         self.connection_status.setWordWrap(True)
         self.connection_status.setAlignment(Qt.AlignTop)
-        self.connection_status.setText(
-            f'<p style="color:{JARVIS_BLUE};">Initializing...</p>'
-        )
+        self.connection_status.setText(f'<p style="color:{JARVIS_AMBER};">Initializing...</p>')
         self.right_layout.addWidget(self.connection_status)
 
-        # --- System Info Label ---
+        # --- System Info ---
         self.sys_info_label = QLabel()
         self.sys_info_label.setObjectName("tool_activity_display")
         self.sys_info_label.setWordWrap(True)
@@ -1262,10 +1221,9 @@ class JARVISWindow(QMainWindow):
         self.sys_info_label.setAlignment(Qt.AlignTop)
         self.right_layout.addWidget(self.sys_info_label)
 
-        # --- Spacer ---
         self.right_layout.addStretch()
 
-        # --- Add Panels to Main Layout ---
+        # --- Add Panels ---
         self.main_layout.addWidget(self.left_panel, 2)
         self.main_layout.addWidget(self.middle_panel, 5)
         self.main_layout.addWidget(self.right_panel, 2)
@@ -1285,14 +1243,13 @@ class JARVISWindow(QMainWindow):
             cpu = psutil.cpu_percent(interval=0)
             mem = psutil.virtual_memory()
             now = datetime.datetime.now().strftime("%H:%M:%S")
-            html = (f'<span style="color: {JARVIS_GOLD}; font-size: 8pt;">'
-                    f'CPU: {cpu}% | RAM: {mem.percent}% | {now}</span>')
-            self.sys_info_label.setText(html)
-        except:
-            pass
+            self.sys_info_label.setText(
+                f'<span style="color: {JARVIS_GOLD}; font-size: 8pt;">'
+                f'CPU: {cpu}% | RAM: {mem.percent}% | {now}</span>'
+            )
+        except: pass
 
     def _populate_microphones(self):
-        """Scans and populates the microphone dropdown list."""
         self.mic_combo.clear()
         try:
             import pyaudio
@@ -1301,36 +1258,21 @@ class JARVISWindow(QMainWindow):
             try:
                 default_info = p.get_default_input_device_info()
                 default_index = default_info.get('index', -1)
-            except:
-                pass
-
+            except: pass
             for i in range(p.get_device_count()):
                 info = p.get_device_info_by_index(i)
                 if info.get('maxInputChannels', 0) > 0:
                     name = info.get('name', f'Device {i}')
-                    label = f"{name}"
-                    if i == default_index:
-                        label = f"{name} (Default)"
-                    self.mic_combo.addItem(label, userData=i)
-
+                    suffix = " (Default)" if i == default_index else ""
+                    self.mic_combo.addItem(f"{name}{suffix}", i)
             p.terminate()
-
-            if self.mic_combo.count() == 0:
-                self.mic_combo.addItem("No microphones found", userData=-1)
-            else:
-                for idx in range(self.mic_combo.count()):
-                    if self.mic_combo.itemData(idx) == default_index:
-                        self.mic_combo.setCurrentIndex(idx)
-                        break
+            print(f">>> [JARVIS] Found {self.mic_combo.count()} microphone(s).")
         except Exception as e:
-            self.mic_combo.addItem(f"Error: {e}", userData=-1)
             print(f">>> [ERROR] Failed to enumerate microphones: {e}")
 
     def _get_selected_mic_index(self):
-        """Returns the selected microphone device index."""
         idx = self.mic_combo.currentData()
-        if idx is not None and idx >= 0:
-            return idx
+        if idx is not None and idx >= 0: return idx
         return None
 
     def setup_backend_thread(self):
@@ -1338,7 +1280,6 @@ class JARVISWindow(QMainWindow):
         self.jarvis_core = JARVIS_Core(mic_device_index=mic_index)
 
         self.user_text_submitted.connect(self.jarvis_core.handle_user_text)
-
         self.jarvis_core.text_received.connect(self.update_text)
         self.jarvis_core.search_results_received.connect(self.update_search_results)
         self.jarvis_core.code_being_executed.connect(self.display_executed_code)
@@ -1347,10 +1288,40 @@ class JARVISWindow(QMainWindow):
         self.jarvis_core.speaking_started.connect(self.on_speaking_started)
         self.jarvis_core.speaking_stopped.connect(self.on_speaking_stopped)
         self.jarvis_core.audio_level_changed.connect(self.audio_waveform.update_level)
+        self.jarvis_core.connection_status_changed.connect(self.on_connection_status_changed)
 
         self.backend_thread = threading.Thread(target=self.jarvis_core.start_event_loop)
         self.backend_thread.daemon = True
         self.backend_thread.start()
+
+    @Slot(str)
+    def on_connection_status_changed(self, status):
+        if status == "CONNECTING":
+            self.connection_status.setText(
+                f'<p style="color:{JARVIS_AMBER};">Connecting to Gemini API...</p>')
+            self.status_label.setText("CONNECTING TO GEMINI...")
+            self.status_label.setStyleSheet(f"color: {JARVIS_AMBER}; font-size: 9pt; padding: 4px 8px; letter-spacing: 1px;")
+        elif status == "CONNECTED":
+            self.connection_status.setText(
+                f'<p style="color:#00FF88; font-weight:bold;">CONNECTED</p>'
+                f'<p style="color:{JARVIS_TEXT_DIM}; font-size:8pt;">Gemini Live API: Online</p>'
+                f'<p style="color:{JARVIS_TEXT_DIM}; font-size:8pt;">ElevenLabs TTS: Ready</p>')
+            self.status_label.setText("SYSTEMS ONLINE  //  READY")
+            self.status_label.setStyleSheet(f"color: {JARVIS_AMBER}; font-size: 9pt; padding: 4px 8px; letter-spacing: 1px;")
+        elif status == "MIC_READY":
+            cur = self.connection_status.text()
+            self.connection_status.setText(
+                cur + f'<p style="color:#00FF88; font-size:8pt;">Microphone: Active</p>')
+        elif status.startswith("MIC_ERROR"):
+            cur = self.connection_status.text()
+            self.connection_status.setText(
+                cur + f'<p style="color:{JARVIS_RED}; font-size:8pt;">Microphone: Error</p>')
+        elif status.startswith("ERROR"):
+            self.connection_status.setText(
+                f'<p style="color:{JARVIS_RED}; font-weight:bold;">CONNECTION FAILED</p>'
+                f'<p style="color:{JARVIS_TEXT_DIM}; font-size:8pt;">{escape(status)}</p>')
+            self.status_label.setText("CONNECTION FAILED")
+            self.status_label.setStyleSheet(f"color: {JARVIS_RED}; font-size: 9pt; padding: 4px 8px; letter-spacing: 1px;")
 
     @Slot()
     def on_speaking_started(self):
@@ -1362,7 +1333,7 @@ class JARVISWindow(QMainWindow):
     def on_speaking_stopped(self):
         self.animation_widget.stop_speaking_animation()
         self.status_label.setText("SYSTEMS ONLINE  //  READY")
-        self.status_label.setStyleSheet(f"color: {JARVIS_BLUE}; font-size: 9pt; padding: 4px 8px; letter-spacing: 1px;")
+        self.status_label.setStyleSheet(f"color: {JARVIS_AMBER}; font-size: 9pt; padding: 4px 8px; letter-spacing: 1px;")
 
     def send_user_text(self):
         text = self.input_box.text().strip()
@@ -1381,7 +1352,7 @@ class JARVISWindow(QMainWindow):
         if self.is_first_jarvis_chunk:
             self.is_first_jarvis_chunk = False
             self.text_display.append(
-                f"<p style='color:{JARVIS_BLUE}; font-weight:bold; margin-bottom:2px;'>"
+                f"<p style='color:{JARVIS_AMBER}; font-weight:bold; margin-bottom:2px;'>"
                 f"&gt; J.A.R.V.I.S.:</p>"
             )
         cursor = self.text_display.textCursor()
@@ -1401,15 +1372,11 @@ class JARVISWindow(QMainWindow):
             return
         self.tool_activity_display.clear()
         self.tool_activity_title.setText(f"{base_title} // SEARCH")
-        html_content = f'<p style="color:{JARVIS_GOLD}; margin-bottom:8px; font-size:9pt;">Search Results:</p>'
+        html = f'<p style="color:{JARVIS_GOLD}; margin-bottom:8px; font-size:9pt;">Search Results:</p>'
         for i, url in enumerate(urls):
             display_text = url.split('//')[1].split('/')[0] if '//' in url else url
-            html_content += (
-                f'<p style="margin:2px 0; padding: 3px;">'
-                f'{i+1}. <a href="{url}" style="color: {JARVIS_BLUE}; text-decoration: none;">'
-                f'{display_text}</a></p>'
-            )
-        self.tool_activity_display.setText(html_content)
+            html += f'<p style="margin:2px 0;">{i+1}. <a href="{url}" style="color: {JARVIS_BLUE};">{display_text}</a></p>'
+        self.tool_activity_display.setText(html)
 
     @Slot(str, str)
     def display_executed_code(self, code, result):
@@ -1421,18 +1388,11 @@ class JARVISWindow(QMainWindow):
             return
         self.tool_activity_display.clear()
         self.tool_activity_title.setText(f"{base_title} // CODE EXEC")
-        html = (
-            f'<p style="color:{JARVIS_GOLD}; margin-bottom:5px; font-size:9pt;">Executing Code:</p>'
-            f'<pre style="white-space: pre-wrap; word-wrap: break-word; color: {JARVIS_TEXT}; '
-            f'font-size: 9pt; line-height: 1.4;">{escape(code)}</pre>'
-        )
+        html = (f'<p style="color:{JARVIS_GOLD}; margin-bottom:5px;">Executing:</p>'
+                f'<pre style="white-space:pre-wrap; color:{JARVIS_TEXT}; font-size:9pt;">{escape(code)}</pre>')
         if result:
-            html += (
-                f'<p style="color:{JARVIS_GOLD}; font-weight:bold; margin-top:10px; '
-                f'margin-bottom: 5px;">&gt; OUTPUT:</p>'
-                f'<pre style="white-space: pre-wrap; word-wrap: break-word; color: #90EE90; '
-                f'font-size: 9pt;">{escape(result.strip())}</pre>'
-            )
+            html += (f'<p style="color:{JARVIS_GOLD}; font-weight:bold; margin-top:10px;">&gt; OUTPUT:</p>'
+                     f'<pre style="white-space:pre-wrap; color:#90EE90; font-size:9pt;">{escape(result.strip())}</pre>')
         self.tool_activity_display.setText(html)
 
     @Slot(str, list)
@@ -1445,20 +1405,15 @@ class JARVISWindow(QMainWindow):
             return
         self.tool_activity_display.clear()
         self.tool_activity_title.setText(f"{base_title} // FILESYSTEM")
-        html = (
-            f'<p style="color:{JARVIS_GOLD}; margin-bottom: 5px;">'
-            f'DIR &gt; <strong>{escape(directory_path)}</strong></p>'
-        )
+        html = f'<p style="color:{JARVIS_GOLD};">DIR &gt; <strong>{escape(directory_path)}</strong></p>'
         if not files:
-            html += f'<p style="margin-top:5px; color:{JARVIS_TEXT_DIM};"><em>(Directory is empty)</em></p>'
+            html += f'<p style="color:{JARVIS_TEXT_DIM};"><em>(Empty)</em></p>'
         else:
             folders = sorted([i for i in files if os.path.isdir(os.path.join(directory_path, i))])
             file_items = sorted([i for i in files if not os.path.isdir(os.path.join(directory_path, i))])
-            html += '<ul style="list-style-type:none; padding-left: 5px; margin-top: 5px;">'
-            for folder in folders:
-                html += f'<li style="margin: 2px 0; color: {JARVIS_GOLD};">[+] {escape(folder)}</li>'
-            for file_item in file_items:
-                html += f'<li style="margin: 2px 0; color: {JARVIS_TEXT};">&#9679; {escape(file_item)}</li>'
+            html += '<ul style="list-style-type:none; padding-left:5px;">'
+            for f in folders: html += f'<li style="color:{JARVIS_GOLD};">[+] {escape(f)}</li>'
+            for f in file_items: html += f'<li style="color:{JARVIS_TEXT};">&#9679; {escape(f)}</li>'
             html += '</ul>'
         self.tool_activity_display.setText(html)
 
@@ -1479,16 +1434,13 @@ class JARVISWindow(QMainWindow):
 if __name__ == "__main__":
     try:
         app = QApplication(sys.argv)
-
-        # Set application-wide font
         font = QFont("Segoe UI", 10)
         app.setFont(font)
-
         window = JARVISWindow()
         window.show()
         sys.exit(app.exec())
     except KeyboardInterrupt:
-        print("\n>>> [JARVIS] Shutting down at user request. Goodbye, Sir.")
+        print("\n>>> [JARVIS] Shutting down. Goodbye, Sir.")
     finally:
         pya.terminate()
         print(">>> [JARVIS] All systems offline.")
