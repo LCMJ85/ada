@@ -938,6 +938,16 @@ class JARVIS_Core(QObject):
         print(f">>> [JARVIS]   J.A.R.V.I.S. is READY for commands   ")
         print(f">>> [JARVIS]   Speak or type to interact with me     ")
         print(f">>> [JARVIS] ========================================")
+
+        # --- Welcome Greeting ---
+        await asyncio.sleep(1.5)  # Wait for all systems to stabilize
+        welcome_text = "Good day, Sir. J.A.R.V.I.S. at your service. All systems are online and fully operational. How may I assist you today?"
+        print(f">>> [JARVIS] Playing welcome greeting...")
+        self.text_received.emit("Good day, Sir. J.A.R.V.I.S. at your service. All systems are online and fully operational. How may I assist you today?")
+        self.end_of_turn.emit()
+        await self.response_queue_tts.put(welcome_text)
+        await self.response_queue_tts.put(None)
+
         results = await asyncio.gather(*self.tasks, return_exceptions=True)
         for i, result in enumerate(results):
             if isinstance(result, Exception):
