@@ -272,6 +272,118 @@ class ArcReactorWidget(QWidget):
 
 
 # ==============================================================================
+# AUDIO WAVEFORM VISUALIZER (Microphone Level Indicator)
+# ==============================================================================
+class AudioWaveformWidget(QWidget):
+    """
+    A custom widget that displays real-time audio waveform/level bars
+    to visually indicate microphone input activity.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(60)
+        self.setMaximumHeight(80)
+        self.num_bars = 32
+        self.bar_values = [0.0] * self.num_bars
+        self.peak_values = [0.0] * self.num_bars
+        self.audio_level = 0.0
+        self.is_active = False
+        self.phase = 0.0
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._animate)
+        self.timer.start(40)
+
+    def update_level(self, level):
+        """Update the audio level (0.0 to 1.0)."""
+        self.audio_level = min(1.0, max(0.0, level))
+        self.is_active = self.audio_level > 0.01
+
+    def _animate(self):
+        self.phase += 0.15
+        for i in range(self.num_bars):
+            if self.is_active:
+                # Create wave pattern based on audio level
+                wave = math.sin(self.phase + i * 0.4) * 0.3 + 0.5
+                target = self.audio_level * wave * (0.6 + 0.4 * math.sin(self.phase * 0.7 + i * 0.3))
+                target = min(1.0, target * 1.5)
+            else:
+                target = 0.02 + 0.01 * math.sin(self.phase * 0.5 + i * 0.2)  # Idle breathing
+            
+            # Smooth transition
+            self.bar_values[i] += (target - self.bar_values[i]) * 0.3
+            
+            # Peak hold with decay
+            if self.bar_values[i] > self.peak_values[i]:
+                self.peak_values[i] = self.bar_values[i]
+            else:
+                self.peak_values[i] *= 0.95
+        
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        w = self.width()
+        h = self.height()
+        
+        # Background
+        painter.fillRect(0, 0, w, h, QColor(10, 10, 15))
+        
+        bar_width = max(2, (w - (self.num_bars + 1) * 2) // self.num_bars)
+        spacing = 2
+        total_width = self.num_bars * (bar_width + spacing)
+        start_x = (w - total_width) // 2
+        
+        center_y = h // 2
+        max_bar_height = (h // 2) - 4
+        
+        for i in range(self.num_bars):
+            x = start_x + i * (bar_width + spacing)
+            bar_h = int(self.bar_values[i] * max_bar_height)
+            
+            if bar_h < 1:
+                bar_h = 1
+            
+            # Color based on level intensity
+            if self.bar_values[i] > 0.7:
+                color = QColor(255, 68, 68)       # Red for high
+            elif self.bar_values[i] > 0.4:
+                color = QColor(255, 215, 0)       # Gold for medium
+            else:
+                color = QColor(79, 195, 247)      # Blue for low
+            
+            if not self.is_active:
+                color = QColor(79, 195, 247, 60)  # Dim blue when idle
+            
+            # Draw bar (mirrored from center)
+            painter.fillRect(x, center_y - bar_h, bar_width, bar_h * 2, color)
+            
+            # Draw peak indicator
+            if self.is_active and self.peak_values[i] > 0.05:
+                peak_y = int(self.peak_values[i] * max_bar_height)
+                peak_color = QColor(255, 228, 77, 200)
+                painter.fillRect(x, center_y - peak_y - 1, bar_width, 2, peak_color)
+                painter.fillRect(x, center_y + peak_y - 1, bar_width, 2, peak_color)
+        
+        # Draw border
+        painter.setPen(QPen(QColor(255, 215, 0, 40), 1))
+        painter.drawRect(0, 0, w - 1, h - 1)
+        
+        # Status text
+        if self.is_active:
+            painter.setPen(QColor(0, 229, 255))
+            level_pct = int(self.audio_level * 100)
+            painter.drawText(4, 12, f"MIC ACTIVE: {level_pct}%")
+        else:
+            painter.setPen(QColor(139, 148, 158, 120))
+            painter.drawText(4, 12, "MIC: STANDBY")
+        
+        painter.end()
+
+
+# ==============================================================================
 # AI BACKEND LOGIC - J.A.R.V.I.S. CORE
 # ==============================================================================
 class JARVIS_Core(QObject):
@@ -289,6 +401,7 @@ class JARVIS_Core(QObject):
     speaking_started = Signal()
     speaking_stopped = Signal()
     system_info_received = Signal(str)
+    audio_level_changed = Signal(float)
 
     def __init__(self, video_mode=DEFAULT_MODE, mic_device_index=None):
         super().__init__()
@@ -813,6 +926,14 @@ class JARVIS_Core(QObject):
             data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
             if not self.is_running:
                 break
+            # Calculate audio level for waveform visualization
+            try:
+                audio_array = np.frombuffer(data, dtype=np.int16)
+                rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
+                level = min(1.0, rms / 8000.0)  # Normalize to 0.0-1.0
+                self.audio_level_changed.emit(level)
+            except Exception:
+                pass
             await self.out_queue_gemini.put({"data": data, "mime_type": "audio/pcm"})
 
     async def send_realtime(self):
@@ -1212,6 +1333,15 @@ class JARVISWindow(QMainWindow):
         self.button_container.addWidget(self.off_button)
         self.right_layout.addLayout(self.button_container)
 
+        # --- Audio Waveform Visualizer ---
+        waveform_label = QLabel("AUDIO INPUT")
+        waveform_label.setObjectName("panel_title")
+        waveform_label.setAlignment(Qt.AlignCenter)
+        self.right_layout.addWidget(waveform_label)
+
+        self.audio_waveform = AudioWaveformWidget()
+        self.right_layout.addWidget(self.audio_waveform)
+
         # --- Microphone Selector ---
         mic_label = QLabel("MICROPHONE")
         mic_label.setObjectName("panel_title")
@@ -1361,6 +1491,7 @@ class JARVISWindow(QMainWindow):
         self.jarvis_core.video_mode_changed.connect(self.update_video_mode_ui)
         self.jarvis_core.speaking_started.connect(self.on_speaking_started)
         self.jarvis_core.speaking_stopped.connect(self.on_speaking_stopped)
+        self.jarvis_core.audio_level_changed.connect(self.audio_waveform.update_level)
 
         self.backend_thread = threading.Thread(target=self.jarvis_core.start_event_loop)
         self.backend_thread.daemon = True
